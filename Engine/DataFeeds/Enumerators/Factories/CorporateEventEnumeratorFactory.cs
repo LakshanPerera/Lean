@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Data;
 using QuantConnect.Data.Auxiliary;
+using QuantConnect.Data.Market;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 
@@ -57,22 +58,31 @@ namespace QuantConnect.Lean.Engine.DataFeeds.Enumerators.Factories
             var lazyFactorFile =
                 new Lazy<FactorFile>(() => SubscriptionUtils.GetFactorFileToUse(config, factorFileProvider));
 
+            var tradableEventProviders = new List<ITradableDateEventProvider>();
+            if (config.Symbol.SecurityType != SecurityType.FutureOption)
+            {
+                // Maintain order of the old event providers to avoid any sort of potential
+                // non-deterministic errors from occurring
+                tradableEventProviders.Add(new MappingEventProvider());
+                tradableEventProviders.Add(new SplitEventProvider());
+                tradableEventProviders.Add(new DividendEventProvider());
+                tradableEventProviders.Add(new DelistingEventProvider());
+            }
+            else
+            {
+                tradableEventProviders.Add(new DelistingEventProvider());
+            }
+
             var enumerator = new AuxiliaryDataEnumerator(
                 config,
                 lazyFactorFile,
                 new Lazy<MapFile>(() => GetMapFileToUse(config, mapFileResolver)),
-                new ITradableDateEventProvider[]
-                {
-                    new MappingEventProvider(),
-                    new SplitEventProvider(),
-                    new DividendEventProvider(),
-                    new DelistingEventProvider()
-                },
+                tradableEventProviders.ToArray(),
                 tradableDayNotifier,
                 includeAuxiliaryData,
                 startTime);
 
-            // avoid price scaling for backtesting; calculate it directly in worker 
+            // avoid price scaling for backtesting; calculate it directly in worker
             // and allow subscription to extract the the data depending on config data mode
             var dataEnumerator = rawDataEnumerator;
             if (enablePriceScaling)
@@ -84,6 +94,20 @@ namespace QuantConnect.Lean.Engine.DataFeeds.Enumerators.Factories
             }
 
             return new SynchronizingEnumerator(dataEnumerator, enumerator);
+        }
+
+        /// <summary>
+        /// Centralized logic used by the data feeds to determine if we should emit auxiliary base data points.
+        /// For equities we only want to emit split/dividends events for non internal and only for <see cref="TradeBar"/> configurations
+        /// this last part is because equities also have <see cref="QuoteBar"/> subscriptions.
+        /// </summary>
+        /// <remarks>The <see cref="TimeSliceFactory"/> does not allow for multiple dividends/splits per symbol in the same time slice
+        /// but we don't want to rely only on that and make an explicit decision here.</remarks>
+        /// <remarks>History provider is never emitting auxiliary data points</remarks>
+        public static bool ShouldEmitAuxiliaryBaseData(SubscriptionDataConfig config)
+        {
+            return config.SecurityType != SecurityType.Equity || !config.IsInternalFeed
+                && (config.Type == typeof(TradeBar) || config.Type == typeof(Tick) && config.TickType == TickType.Trade);
         }
 
         private static MapFile GetMapFileToUse(

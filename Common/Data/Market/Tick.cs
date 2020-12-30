@@ -17,6 +17,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using Newtonsoft.Json;
 using ProtoBuf;
 using QuantConnect.Logging;
 using QuantConnect.Util;
@@ -30,6 +31,8 @@ namespace QuantConnect.Data.Market
     [ProtoContract(SkipConstructor = true)]
     public class Tick : BaseData
     {
+        private uint? _parsedSaleCondition;
+
         /// <summary>
         /// Type of the Tick: Trade or Quote.
         /// </summary>
@@ -51,8 +54,27 @@ namespace QuantConnect.Data.Market
         /// <summary>
         /// Sale condition for the tick.
         /// </summary>
-        [ProtoMember(13)]
         public string SaleCondition = "";
+
+        /// <summary>
+        /// For performance parsed sale condition for the tick.
+        /// </summary>
+        [JsonIgnore]
+        public uint ParsedSaleCondition
+        {
+            get
+            {
+                if (!_parsedSaleCondition.HasValue)
+                {
+                    _parsedSaleCondition = uint.Parse(SaleCondition, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                }
+                return _parsedSaleCondition.Value;
+            }
+            set
+            {
+                _parsedSaleCondition = value;
+            }
+        }
 
         /// <summary>
         /// Bool whether this is a suspicious tick
@@ -258,7 +280,7 @@ namespace QuantConnect.Data.Market
             DataType = MarketDataType.Tick;
             Symbol = symbol;
             Time = baseDate.Date.AddMilliseconds(csv[0].ToInt32());
-            Value = csv[1].ToDecimal() / GetScaleFactor(symbol.SecurityType);
+            Value = csv[1].ToDecimal() / GetScaleFactor(symbol);
             TickType = TickType.Trade;
             Quantity = csv[2].ToDecimal();
             Exchange = csv[3].Trim();
@@ -280,7 +302,7 @@ namespace QuantConnect.Data.Market
                 Symbol = config.Symbol;
 
                 // Which security type is this data feed:
-                var scaleFactor = GetScaleFactor(config.SecurityType);
+                var scaleFactor = GetScaleFactor(config.Symbol);
 
                 switch (config.SecurityType)
                 {
@@ -365,6 +387,7 @@ namespace QuantConnect.Data.Market
                         }
                     case SecurityType.Future:
                     case SecurityType.Option:
+                    case SecurityType.FutureOption:
                         {
                             TickType = config.TickType;
                             Time = date.Date.AddMilliseconds((double)reader.GetDecimal())
@@ -418,7 +441,7 @@ namespace QuantConnect.Data.Market
                 Symbol = config.Symbol;
 
                 // Which security type is this data feed:
-                var scaleFactor = GetScaleFactor(config.SecurityType);
+                var scaleFactor = GetScaleFactor(config.Symbol);
 
                 switch (config.SecurityType)
                 {
@@ -508,6 +531,7 @@ namespace QuantConnect.Data.Market
                     }
                     case SecurityType.Future:
                     case SecurityType.Option:
+                    case SecurityType.FutureOption:
                     {
                         var csv = line.ToCsv(7);
                         TickType = config.TickType;
@@ -610,7 +634,8 @@ namespace QuantConnect.Data.Market
 
             var source = LeanData.GenerateZipFilePath(Globals.DataFolder, config.Symbol, date, config.Resolution, config.TickType);
             if (config.SecurityType == SecurityType.Option ||
-                config.SecurityType == SecurityType.Future)
+                config.SecurityType == SecurityType.Future ||
+                config.SecurityType == SecurityType.FutureOption)
             {
                 source += "#" + LeanData.GenerateZipEntryName(config.Symbol, date, config.Resolution, config.TickType);
             }
@@ -692,9 +717,15 @@ namespace QuantConnect.Data.Market
             }
         }
 
-        private static decimal GetScaleFactor(SecurityType securityType)
+        /// <summary>
+        /// Gets the scaling factor according to the <see cref="SecurityType"/> of the <see cref="Symbol"/> provided.
+        /// Non-equity data will not be scaled, including options with an underlying non-equity asset class.
+        /// </summary>
+        /// <param name="symbol">Symbol to get scaling factor for</param>
+        /// <returns>Scaling factor</returns>
+        private static decimal GetScaleFactor(Symbol symbol)
         {
-            return securityType == SecurityType.Equity || securityType == SecurityType.Option ? 10000m : 1;
+            return symbol.SecurityType == SecurityType.Equity || symbol.SecurityType == SecurityType.Option ? 10000m : 1;
         }
 
     }

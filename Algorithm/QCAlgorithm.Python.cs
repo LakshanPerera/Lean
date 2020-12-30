@@ -189,6 +189,24 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Creates and adds a new Future Option contract to the algorithm.
+        /// </summary>
+        /// <param name="symbol">The <see cref="Future"/> canonical symbol (i.e. Symbol returned from <see cref="AddFuture"/>)</param>
+        /// <param name="optionFilter">Filter to apply to option contracts loaded as part of the universe</param>
+        /// <returns>The new <see cref="Option"/> security, containing a <see cref="Future"/> as its underlying.</returns>
+        /// <exception cref="ArgumentException">The symbol provided is not canonical.</exception>
+        public void AddFutureOption(Symbol futureSymbol, PyObject optionFilter)
+        {
+            Func<OptionFilterUniverse, OptionFilterUniverse> optionFilterUniverse;
+            if (!optionFilter.TryConvertToDelegate(out optionFilterUniverse))
+            {
+                throw new ArgumentException("Option contract universe filter provided is not a function");
+            }
+
+            AddFutureOption(futureSymbol, optionFilterUniverse);
+        }
+
+        /// <summary>
         /// Adds the provided final Symbol with/without underlying set to the algorithm.
         /// This method is meant for custom data types that require a ticker, but have no underlying Symbol.
         /// Examples of data sources that meet this criteria are U.S. Treasury Yield Curve Rates and Trading Economics data
@@ -230,22 +248,22 @@ namespace QuantConnect.Algorithm
         /// will be executed on day changes in the NewYork time zone (<see cref="TimeZones.NewYork"/>
         /// </summary>
         /// <param name="pyObject">Defines an initial coarse selection</param>
-        public void AddUniverse(PyObject pyObject)
+        public Universe AddUniverse(PyObject pyObject)
         {
             Func<IEnumerable<CoarseFundamental>, object> coarseFunc;
             Universe universe;
 
             if (pyObject.TryConvert(out universe))
             {
-                AddUniverse(universe);
+                return AddUniverse(universe);
             }
             else if (pyObject.TryConvert(out universe, allowPythonDerivative: true))
             {
-                AddUniverse(new UniversePythonWrapper(pyObject));
+                return AddUniverse(new UniversePythonWrapper(pyObject));
             }
             else if (pyObject.TryConvertToDelegate(out coarseFunc))
             {
-                AddUniverse(coarseFunc.ConvertToUniverseSelectionSymbolDelegate());
+                return AddUniverse(coarseFunc.ConvertToUniverseSelectionSymbolDelegate());
             }
             else
             {
@@ -262,7 +280,7 @@ namespace QuantConnect.Algorithm
         /// </summary>
         /// <param name="pyObject">Defines an initial coarse selection or a universe</param>
         /// <param name="pyfine">Defines a more detailed selection with access to more data</param>
-        public void AddUniverse(PyObject pyObject, PyObject pyfine)
+        public Universe AddUniverse(PyObject pyObject, PyObject pyfine)
         {
             Func<IEnumerable<CoarseFundamental>, object> coarseFunc;
             Func<IEnumerable<FineFundamental>, object> fineFunc;
@@ -270,11 +288,11 @@ namespace QuantConnect.Algorithm
 
             if (pyObject.TryConvert(out universe) && pyfine.TryConvertToDelegate(out fineFunc))
             {
-                AddUniverse(universe, fineFunc.ConvertToUniverseSelectionSymbolDelegate());
+                return AddUniverse(universe, fineFunc.ConvertToUniverseSelectionSymbolDelegate());
             }
             else if (pyObject.TryConvertToDelegate(out coarseFunc) && pyfine.TryConvertToDelegate(out fineFunc))
             {
-                AddUniverse(coarseFunc.ConvertToUniverseSelectionSymbolDelegate(),
+                return AddUniverse(coarseFunc.ConvertToUniverseSelectionSymbolDelegate(),
                     fineFunc.ConvertToUniverseSelectionSymbolDelegate());
             }
             else
@@ -293,10 +311,10 @@ namespace QuantConnect.Algorithm
         /// <param name="name">A unique name for this universe</param>
         /// <param name="resolution">The resolution this universe should be triggered on</param>
         /// <param name="pySelector">Function delegate that accepts a DateTime and returns a collection of string symbols</param>
-        public void AddUniverse(string name, Resolution resolution, PyObject pySelector)
+        public Universe AddUniverse(string name, Resolution resolution, PyObject pySelector)
         {
             var selector = pySelector.ConvertToDelegate<Func<DateTime, object>>();
-            AddUniverse(name, resolution, selector.ConvertToUniverseSelectionStringDelegate());
+            return AddUniverse(name, resolution, selector.ConvertToUniverseSelectionStringDelegate());
         }
 
         /// <summary>
@@ -305,10 +323,10 @@ namespace QuantConnect.Algorithm
         /// </summary>
         /// <param name="name">A unique name for this universe</param>
         /// <param name="pySelector">Function delegate that accepts a DateTime and returns a collection of string symbols</param>
-        public void AddUniverse(string name, PyObject pySelector)
+        public Universe AddUniverse(string name, PyObject pySelector)
         {
             var selector = pySelector.ConvertToDelegate<Func<DateTime, object>>();
-            AddUniverse(name, selector.ConvertToUniverseSelectionStringDelegate());
+            return AddUniverse(name, selector.ConvertToUniverseSelectionStringDelegate());
         }
 
         /// <summary>
@@ -320,10 +338,10 @@ namespace QuantConnect.Algorithm
         /// <param name="market">The market of the universe</param>
         /// <param name="universeSettings">The subscription settings used for securities added from this universe</param>
         /// <param name="pySelector">Function delegate that accepts a DateTime and returns a collection of string symbols</param>
-        public void AddUniverse(SecurityType securityType, string name, Resolution resolution, string market, UniverseSettings universeSettings, PyObject pySelector)
+        public Universe AddUniverse(SecurityType securityType, string name, Resolution resolution, string market, UniverseSettings universeSettings, PyObject pySelector)
         {
             var selector = pySelector.ConvertToDelegate<Func<DateTime, object>>();
-            AddUniverse(securityType, name, resolution, market, universeSettings, selector.ConvertToUniverseSelectionStringDelegate());
+            return AddUniverse(securityType, name, resolution, market, universeSettings, selector.ConvertToUniverseSelectionStringDelegate());
         }
 
         /// <summary>
@@ -334,9 +352,9 @@ namespace QuantConnect.Algorithm
         /// <param name="T">The data type</param>
         /// <param name="name">A unique name for this universe</param>
         /// <param name="selector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(PyObject T, string name, PyObject selector)
+        public Universe AddUniverse(PyObject T, string name, PyObject selector)
         {
-            AddUniverse(T.CreateType(), SecurityType.Equity, name, Resolution.Daily, Market.USA, UniverseSettings, selector);
+            return AddUniverse(T.CreateType(), SecurityType.Equity, name, Resolution.Daily, Market.USA, UniverseSettings, selector);
         }
 
         /// <summary>
@@ -348,9 +366,9 @@ namespace QuantConnect.Algorithm
         /// <param name="name">A unique name for this universe</param>
         /// <param name="resolution">The epected resolution of the universe data</param>
         /// <param name="selector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(PyObject T, string name, Resolution resolution, PyObject selector)
+        public Universe AddUniverse(PyObject T, string name, Resolution resolution, PyObject selector)
         {
-            AddUniverse(T.CreateType(), SecurityType.Equity, name, resolution, Market.USA, UniverseSettings, selector);
+            return AddUniverse(T.CreateType(), SecurityType.Equity, name, resolution, Market.USA, UniverseSettings, selector);
         }
 
         /// <summary>
@@ -363,9 +381,9 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The epected resolution of the universe data</param>
         /// <param name="universeSettings">The settings used for securities added by this universe</param>
         /// <param name="selector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(PyObject T, string name, Resolution resolution, UniverseSettings universeSettings, PyObject selector)
+        public Universe AddUniverse(PyObject T, string name, Resolution resolution, UniverseSettings universeSettings, PyObject selector)
         {
-            AddUniverse(T.CreateType(), SecurityType.Equity, name, resolution, Market.USA, universeSettings, selector);
+            return AddUniverse(T.CreateType(), SecurityType.Equity, name, resolution, Market.USA, universeSettings, selector);
         }
 
         /// <summary>
@@ -377,9 +395,9 @@ namespace QuantConnect.Algorithm
         /// <param name="name">A unique name for this universe</param>
         /// <param name="universeSettings">The settings used for securities added by this universe</param>
         /// <param name="selector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(PyObject T, string name, UniverseSettings universeSettings, PyObject selector)
+        public Universe AddUniverse(PyObject T, string name, UniverseSettings universeSettings, PyObject selector)
         {
-            AddUniverse(T.CreateType(), SecurityType.Equity, name, Resolution.Daily, Market.USA, universeSettings, selector);
+            return AddUniverse(T.CreateType(), SecurityType.Equity, name, Resolution.Daily, Market.USA, universeSettings, selector);
         }
 
         /// <summary>
@@ -392,9 +410,9 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The epected resolution of the universe data</param>
         /// <param name="market">The market for selected symbols</param>
         /// <param name="selector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(PyObject T, SecurityType securityType, string name, Resolution resolution, string market, PyObject selector)
+        public Universe AddUniverse(PyObject T, SecurityType securityType, string name, Resolution resolution, string market, PyObject selector)
         {
-            AddUniverse(T.CreateType(), securityType, name, resolution, market, UniverseSettings, selector);
+            return AddUniverse(T.CreateType(), securityType, name, resolution, market, UniverseSettings, selector);
         }
 
         /// <summary>
@@ -407,9 +425,9 @@ namespace QuantConnect.Algorithm
         /// <param name="market">The market for selected symbols</param>
         /// <param name="universeSettings">The subscription settings to use for newly created subscriptions</param>
         /// <param name="selector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(PyObject T, SecurityType securityType, string name, Resolution resolution, string market, UniverseSettings universeSettings, PyObject selector)
+        public Universe AddUniverse(PyObject T, SecurityType securityType, string name, Resolution resolution, string market, UniverseSettings universeSettings, PyObject selector)
         {
-            AddUniverse(T.CreateType(), securityType, name, resolution, market, universeSettings, selector);
+            return AddUniverse(T.CreateType(), securityType, name, resolution, market, universeSettings, selector);
         }
 
         /// <summary>
@@ -422,7 +440,7 @@ namespace QuantConnect.Algorithm
         /// <param name="market">The market for selected symbols</param>
         /// <param name="universeSettings">The subscription settings to use for newly created subscriptions</param>
         /// <param name="pySelector">Function delegate that performs selection on the universe data</param>
-        public void AddUniverse(Type dataType, SecurityType securityType, string name, Resolution resolution, string market, UniverseSettings universeSettings, PyObject pySelector)
+        public Universe AddUniverse(Type dataType, SecurityType securityType, string name, Resolution resolution, string market, UniverseSettings universeSettings, PyObject pySelector)
         {
             var marketHoursDbEntry = MarketHoursDatabase.GetEntry(market, name, securityType);
             var dataTimeZone = marketHoursDbEntry.DataTimeZone;
@@ -432,7 +450,7 @@ namespace QuantConnect.Algorithm
 
             var selector = pySelector.ConvertToDelegate<Func<IEnumerable<IBaseData>, object>>();
 
-            AddUniverse(new FuncUniverse(config, universeSettings, SecurityInitializer, baseDatas =>
+            return AddUniverse(new FuncUniverse(config, universeSettings, SecurityInitializer, baseDatas =>
             {
                 var result = selector(baseDatas);
                 return ReferenceEquals(result, Universe.Unchanged)
@@ -440,6 +458,30 @@ namespace QuantConnect.Algorithm
                         .Select(x => x is Symbol ? (Symbol)x : QuantConnect.Symbol.Create((string)x, securityType, market, baseDataType: dataType));
                 }
             ));
+        }
+
+        /// <summary>
+        /// Creates a new universe selection model and adds it to the algorithm. This universe selection model will chain to the security
+        /// changes of a given <see cref="Universe"/> selection output and create a new <see cref="OptionChainUniverse"/> for each of them
+        /// </summary>
+        /// <param name="universe">The universe we want to chain an option universe selection model too</param>
+        /// <param name="optionFilter">The option filter universe to use</param>
+        public void AddUniverseOptions(PyObject universe, PyObject optionFilter)
+        {
+            Func<OptionFilterUniverse, OptionFilterUniverse> convertedOptionChain;
+            Universe universeToChain;
+
+            if (universe.TryConvert(out universeToChain) && optionFilter.TryConvertToDelegate(out convertedOptionChain))
+            {
+                AddUniverseOptions(universeToChain, convertedOptionChain);
+            }
+            else
+            {
+                using (Py.GIL())
+                {
+                    throw new ArgumentException($"QCAlgorithm.AddChainedEquityOptionUniverseSelectionModel: {universe.Repr()} or {optionFilter.Repr()} is not a valid argument.");
+                }
+            }
         }
 
         /// <summary>
@@ -493,7 +535,7 @@ namespace QuantConnect.Algorithm
             catch
             {
 
-            }     
+            }
 
             // Finally, since above didn't work, just try it as a timespan
             // Issue #4668 Fix
@@ -508,7 +550,7 @@ namespace QuantConnect.Algorithm
                         RegisterIndicator(symbol, indicator, timeSpan, selector);
                     }
                 }
-                catch 
+                catch
                 {
                     throw new ArgumentException("Invalid third argument, should be either a valid consolidator or timedelta object");
                 }

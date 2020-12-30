@@ -506,6 +506,10 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                     ProcessAsynchronousEvents();
                 }
             }
+            catch (ThreadAbortException)
+            {
+                Log.Trace("BrokerageTransactionHandler.Run(): Thread has been aborted");
+            }
             catch (Exception err)
             {
                 // unexpected error, we need to close down shop
@@ -1030,7 +1034,7 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                 // update the ticket after we've processed the fill, but before the event, this way everything is ready for user code
                 ticket.AddOrderEvent(orderEvent);
             }
-            
+
             //We have an event! :) Order filled, send it in to be handled by algorithm portfolio.
             if (orderEvent.Status != OrderStatus.None) //order.Status != OrderStatus.Submitted
             {
@@ -1083,10 +1087,7 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
         private void HandlePositionAssigned(OrderEvent fill)
         {
             // informing user algorithm that option position has been assigned
-            if (fill.IsAssignment)
-            {
-                _algorithm.OnAssignmentOrderEvent(fill);
-            }
+            _algorithm.OnAssignmentOrderEvent(fill);
         }
 
         /// <summary>

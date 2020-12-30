@@ -142,8 +142,33 @@
       <Link>Properties\SharedAssemblyInfo.cs</Link>
     </Compile>
     <Compile Include="AddAlphaModelAlgorithm.cs" />
+    <Compile Include="FillForwardEnumeratorOutOfOrderBarRegressionAlgorithm.cs" />
+    <Compile Include="CustomBuyingPowerModelAlgorithm.cs" />
+    <Compile Include="AddFutureOptionContractDataStreamingRegressionAlgorithm.cs" />
+    <Compile Include="AddFutureOptionSingleOptionChainSelectedInUniverseFilterRegressionAlgorithm.cs" />
+    <Compile Include="AddOptionContractExpiresRegressionAlgorithm.cs" />
+    <Compile Include="AltData\QuiverWallStreetBetsDataAlgorithm.cs" />
+    <Compile Include="FutureOptionCallITMGreeksExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FuturesAndFuturesOptionsExpiryTimeAndLiquidationRegressionAlgorithm.cs" />
+    <Compile Include="OnOrderEventExceptionRegression.cs" />
+    <Compile Include="FutureOptionCallITMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionCallOTMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionPutITMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionPutOTMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionBuySellCallIntradayRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionShortCallITMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionShortCallOTMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionShortPutOTMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="FutureOptionShortPutITMExpiryRegressionAlgorithm.cs" />
+    <Compile Include="ScaledFillForwardDataRegressionAlgorithm.cs" />
     <Compile Include="DailyHistoryForDailyResolutionRegressionAlgorithm.cs" />
     <Compile Include="DailyHistoryForMinuteResolutionRegressionAlgorithm.cs" />
+    <Compile Include="ExtendedMarketHoursHistoryRegressionAlgorithm.cs" />
+    <Compile Include="EquityTickQuoteAdjustedModeRegressionAlgorithm.cs" />
+    <Compile Include="AddOptionContractFromUniverseRegressionAlgorithm.cs" />
+    <Compile Include="CoarseFineOptionUniverseChainRegressionAlgorithm.cs" />
+    <Compile Include="OptionChainedAndUniverseSelectionRegressionAlgorithm.cs" />
+    <Compile Include="OptionAssignmentRegressionAlgorithm.cs" />
     <Compile Include="SwitchDataModeRegressionAlgorithm.cs" />
     <Compile Include="AddRemoveOptionUniverseRegressionAlgorithm.cs" />
     <Compile Include="AddRemoveSecurityRegressionAlgorithm.cs" />
@@ -358,6 +383,7 @@
     <Compile Include="USEnergyInformationAdministrationAlgorithm.cs" />
     <Compile Include="UserDefinedUniverseAlgorithm.cs" />
     <Compile Include="VolumeWeightedAveragePriceExecutionModelRegressionAlgorithm.cs" />
+    <Compile Include="WarmUpAfterIntializeRegression.cs" />
     <Compile Include="WarmupAlgorithm.cs" />
     <Compile Include="WarmupConversionRatesRegressionAlgorithm.cs" />
     <Compile Include="WarmupHistoryAlgorithm.cs" />

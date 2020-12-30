@@ -239,7 +239,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     EventHandler handler = (sender, args) => subscription?.OnNewDataAvailable();
                     enumerator = _dataQueueHandler.Subscribe(request.Configuration, handler);
 
-                    if (request.Configuration.Symbol.SecurityType == SecurityType.Equity && !request.Configuration.IsInternalFeed)
+                    if (request.Configuration.SecurityType == SecurityType.Equity && CorporateEventEnumeratorFactory.ShouldEmitAuxiliaryBaseData(request.Configuration))
                     {
                         var dividends = _dataQueueHandler.Subscribe(new SubscriptionDataConfig(request.Configuration, typeof(Dividend)), handler);
                         var splits = _dataQueueHandler.Subscribe(new SubscriptionDataConfig(request.Configuration, typeof(Split)), handler);
@@ -252,7 +252,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 {
                     var fillForwardResolution = _subscriptions.UpdateAndGetFillForwardResolution(request.Configuration);
 
-                    enumerator = new LiveFillForwardEnumerator(_frontierTimeProvider, enumerator, request.Security.Exchange, fillForwardResolution, request.Configuration.ExtendedMarketHours, localEndTime, request.Configuration.Increment, request.Configuration.DataTimeZone, request.StartTimeLocal);
+                    enumerator = new LiveFillForwardEnumerator(_frontierTimeProvider, enumerator, request.Security.Exchange, fillForwardResolution, request.Configuration.ExtendedMarketHours, localEndTime, request.Configuration.Increment, request.Configuration.DataTimeZone);
                 }
 
                 // define market hours and user filters to incoming data
@@ -346,7 +346,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 {
                     var fillForwardResolution = _subscriptions.UpdateAndGetFillForwardResolution(subRequest.Configuration);
                     var input = _dataQueueHandler.Subscribe(subRequest.Configuration, (sender, args) => subscription.OnNewDataAvailable());
-                    return new LiveFillForwardEnumerator(_frontierTimeProvider, input, subRequest.Security.Exchange, fillForwardResolution, subRequest.Configuration.ExtendedMarketHours, localEndTime, subRequest.Configuration.Increment, subRequest.Configuration.DataTimeZone, subRequest.StartTimeLocal);
+                    return new LiveFillForwardEnumerator(_frontierTimeProvider, input, subRequest.Security.Exchange, fillForwardResolution, subRequest.Configuration.ExtendedMarketHours, localEndTime, subRequest.Configuration.Increment, subRequest.Configuration.DataTimeZone);
                 };
 
                 var symbolUniverse = _dataQueueHandler as IDataQueueUniverseProvider;

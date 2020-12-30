@@ -34,6 +34,7 @@ namespace QuantConnect.Tests
         public static readonly Symbol LODE = CreateEquitySymbol("LODE");
         public static readonly Symbol IBM = CreateEquitySymbol("IBM");
         public static readonly Symbol GOOG = CreateEquitySymbol("GOOG");
+        public static readonly Symbol LOW = CreateEquitySymbol("LOW");
 
         public static readonly Symbol USDJPY = CreateForexSymbol("USDJPY");
         public static readonly Symbol EURUSD = CreateForexSymbol("EURUSD");
@@ -94,6 +95,24 @@ namespace QuantConnect.Tests
         public static Symbol Lookup(SymbolsKey key)
         {
             return (Symbol)typeof(Symbols).GetField(key.ToString(), BindingFlags.Public | BindingFlags.Static).GetValue(null);
+        }
+
+        /// <summary>
+        /// Gets a symbol matching the specified <paramref name="type"/>
+        /// </summary>
+        public static Symbol GetBySecurityType(SecurityType type)
+        {
+            switch (type)
+            {
+                case SecurityType.Equity:   return SPY;
+                case SecurityType.Option:   return SPY_C_192_Feb19_2016;
+                case SecurityType.Forex:    return EURUSD;
+                case SecurityType.Future:   return Future_CLF19_Jan2019;
+                case SecurityType.Cfd:      return XAGUSD;
+                case SecurityType.Crypto:   return BTCUSD;
+                default:
+                    throw new NotImplementedException($"Symbols.GetBySecurityType({type}) is not implemented.");
+            }
         }
 
         private static Symbol CreateForexSymbol(string symbol)

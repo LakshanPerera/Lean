@@ -73,6 +73,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         private readonly bool _isLiveMode;
 
         private BaseData _previous;
+        private decimal? _lastRawPrice;
         private readonly IEnumerator<DateTime> _tradeableDates;
 
         // used when emitting aux data from within while loop
@@ -239,7 +240,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     // only take the resolved map file if it has data, otherwise we'll use the empty one we defined above
                     if (mapFile.Any()) _mapFile = mapFile;
 
-                    if (!_config.IsCustomData && _config.SecurityType != SecurityType.Option)
+                    if (!_config.IsCustomData && _config.SecurityType != SecurityType.Option && _config.SecurityType != SecurityType.FutureOption)
                     {
                         var factorFile = _factorFileProvider.Get(_config.Symbol);
                         _hasScaleFactors = factorFile != null;
@@ -281,19 +282,8 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 }
             }
 
-            // Estimate delisting date.
-            switch (_config.Symbol.ID.SecurityType)
-            {
-                case SecurityType.Future:
-                    _delistingDate = _config.Symbol.ID.Date;
-                    break;
-                case SecurityType.Option:
-                    _delistingDate = OptionSymbol.GetLastDayOfTrading(_config.Symbol);
-                    break;
-                default:
-                    _delistingDate = _mapFile.DelistingDate;
-                    break;
-            }
+            _delistingDate = _config.Symbol.GetDelistingDate(_mapFile);
+
             // adding a day so we stop at EOD
             _delistingDate = _delistingDate.AddDays(1);
 
@@ -424,6 +414,8 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     // we've satisfied user and market hour filters, so this data is good to go as current
                     Current = instance;
 
+                    // we keep the last raw price registered before we return so we are not affected by anyone (price scale) modifying our current
+                    _lastRawPrice = Current.Price;
                     return true;
                 }
 
@@ -571,7 +563,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             {
                 date = _tradeableDates.Current;
 
-                OnNewTradableDate(new NewTradableDateEventArgs(date, _previous, _config.Symbol));
+                OnNewTradableDate(new NewTradableDateEventArgs(date, _previous, _config.Symbol, _lastRawPrice));
 
                 if (_pastDelistedDate || date > _delistingDate)
                 {

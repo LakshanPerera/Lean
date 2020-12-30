@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Brokerages.Alpaca.Markets;
 using QuantConnect.Data;
+using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 using QuantConnect.Orders;
 using QuantConnect.Orders.Fees;
@@ -39,6 +40,7 @@ namespace QuantConnect.Brokerages.Alpaca
         private readonly AlpacaTradingClient _alpacaTradingClient;
         private readonly PolygonDataClient _polygonDataClient;
         private readonly SockClient _sockClient;
+        private readonly ISymbolMapper _symbolMapper;
 
         /// <summary>
         /// This lock is used to sync 'PlaceOrder' and callback 'OnTradeUpdate'
@@ -65,10 +67,11 @@ namespace QuantConnect.Brokerages.Alpaca
         /// </summary>
         /// <param name="orderProvider">The order provider.</param>
         /// <param name="securityProvider">The holdings provider.</param>
+        /// <param name="mapFileProvider">representing all the map files</param>
         /// <param name="accountKeyId">The Alpaca api key id</param>
         /// <param name="secretKey">The api secret key</param>
         /// <param name="tradingMode">The Alpaca trading mode. paper/live</param>
-        public AlpacaBrokerage(IOrderProvider orderProvider, ISecurityProvider securityProvider, string accountKeyId, string secretKey, string tradingMode)
+        public AlpacaBrokerage(IOrderProvider orderProvider, ISecurityProvider securityProvider, IMapFileProvider mapFileProvider, string accountKeyId, string secretKey, string tradingMode)
             : base("Alpaca Brokerage")
         {
             var httpScheme = "https://";
@@ -80,7 +83,7 @@ namespace QuantConnect.Brokerages.Alpaca
 
             _orderProvider = orderProvider;
             _securityProvider = securityProvider;
-
+            _symbolMapper = new AlpacaSymbolMapper(mapFileProvider);
             _marketHours = MarketHoursDatabase.FromDataFolder();
 
             // Alpaca trading client
@@ -111,11 +114,18 @@ namespace QuantConnect.Brokerages.Alpaca
         public override bool IsConnected => _sockClient.IsConnected;
 
         /// <summary>
+        /// Returns the brokerage account's base currency
+        /// </summary>
+        public override string AccountBaseCurrency => Currencies.USD;
+
+        /// <summary>
         /// Connects the client to the broker's remote servers
         /// </summary>
         public override void Connect()
         {
             if (IsConnected) return;
+
+            AccountBaseCurrency = GetAccountBaseCurrency();
 
             _sockClient.Connect();
         }
@@ -153,8 +163,7 @@ namespace QuantConnect.Brokerages.Alpaca
 
             return new List<CashAmount>
             {
-                new CashAmount(balance.TradableCash,
-                    Currencies.USD)
+                new CashAmount(balance.TradableCash, balance.Currency)
             };
         }
 
@@ -291,6 +300,19 @@ namespace QuantConnect.Brokerages.Alpaca
             {
                 yield return item;
             }
+        }
+
+        /// <summary>
+        /// Gets the account base currency
+        /// </summary>
+        private string GetAccountBaseCurrency()
+        {
+            CheckRateLimiting();
+
+            var task = _alpacaTradingClient.GetAccountAsync();
+            var balance = task.SynchronouslyAwaitTaskResult();
+
+            return balance.Currency;
         }
 
         #endregion
