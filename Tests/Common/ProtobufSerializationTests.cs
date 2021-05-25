@@ -180,7 +180,7 @@ namespace QuantConnect.Tests.Common
                     Time = time + TimeSpan.FromMilliseconds(i),
                     Quantity = i,
                     DataType = MarketDataType.Tick,
-                    Exchange = "Pinocho",
+                    Exchange = "NASDAQ",
                     SaleCondition = "VerySold",
                     TickType = TickType.Quote,
                     Value = i,
@@ -212,14 +212,34 @@ namespace QuantConnect.Tests.Common
                     Assert.AreEqual(time + TimeSpan.FromMilliseconds(i), result.Time);
                     Assert.AreEqual(i, result.Quantity);
                     Assert.AreEqual(MarketDataType.Tick, result.DataType);
-                    Assert.AreEqual("Pinocho", result.Exchange);
+                    Assert.AreEqual("NASDAQ", result.Exchange);
                     Assert.IsNull(result.SaleCondition);
                     Assert.AreEqual(TickType.Quote, result.TickType);
                     Assert.AreEqual(time + TimeSpan.FromMilliseconds(i), result.EndTime);
                     Assert.AreEqual(i, result.Value);
                     Assert.AreEqual(i, result.BidPrice);
                     Assert.AreEqual(i, result.BidSize);
+                    Assert.IsNull(result.Symbol);
                 }
+            }
+        }
+
+        [Test]
+        public void OpenInterestSerializationRoundTrip()
+        {
+            var openInterest = new OpenInterest(DateTime.UtcNow, Symbols.AAPL, 10);
+
+            var serializedTick = openInterest.ProtobufSerialize();
+
+            // verify its correct
+            using (var stream = new MemoryStream(serializedTick))
+            {
+                var result = (Tick)Serializer.Deserialize<IEnumerable<BaseData>>(stream).First();
+
+                Assert.IsNull(result.Symbol);
+                Assert.AreEqual(openInterest.Time, result.Time);
+                Assert.AreEqual(openInterest.EndTime, result.EndTime);
+                Assert.AreEqual(openInterest.Value, result.Value);
             }
         }
 
@@ -234,7 +254,7 @@ namespace QuantConnect.Tests.Common
                 Time = DateTime.UtcNow,
                 Quantity = 10,
                 DataType = MarketDataType.Tick,
-                Exchange = "Pinocho",
+                Exchange = "NASDAQ",
                 SaleCondition = "VerySold",
                 TickType = TickType.Quote,
                 EndTime = DateTime.UtcNow,
@@ -255,7 +275,7 @@ namespace QuantConnect.Tests.Common
                 Assert.AreEqual(tick.Time, result.Time);
                 Assert.AreEqual(tick.Quantity, result.Quantity);
                 Assert.AreEqual(tick.DataType, result.DataType);
-                Assert.AreEqual("Pinocho", result.Exchange);
+                Assert.AreEqual("NASDAQ", result.Exchange);
                 Assert.IsNull(result.SaleCondition);
                 Assert.AreEqual(tick.TickType, result.TickType);
                 Assert.AreEqual(tick.EndTime, result.EndTime);

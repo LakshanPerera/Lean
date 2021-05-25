@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -24,6 +24,7 @@ using QuantConnect.Orders.Fills;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Securities;
 using QuantConnect.Securities.Option;
+using QuantConnect.Securities.Positions;
 
 namespace QuantConnect.Brokerages.Backtesting
 {
@@ -269,7 +270,7 @@ namespace QuantConnect.Brokerages.Backtesting
                     }
 
                     // all order fills are processed on the next bar (except for market orders)
-                    if (order.Time == Algorithm.UtcTime && order.Type != OrderType.Market)
+                    if (order.Time == Algorithm.UtcTime && order.Type != OrderType.Market && order.Type != OrderType.OptionExercise)
                     {
                         stillNeedsScan = true;
                         continue;
@@ -329,7 +330,10 @@ namespace QuantConnect.Brokerages.Backtesting
                     HasSufficientBuyingPowerForOrderResult hasSufficientBuyingPowerResult;
                     try
                     {
-                        hasSufficientBuyingPowerResult = security.BuyingPowerModel.HasSufficientBuyingPowerForOrder(Algorithm.Portfolio, security, order);
+                        var group = Algorithm.Portfolio.Positions.CreatePositionGroup(order);
+                        hasSufficientBuyingPowerResult = group.BuyingPowerModel.HasSufficientBuyingPowerForOrder(
+                            new HasSufficientPositionGroupBuyingPowerForOrderParameters(Algorithm.Portfolio, group, order)
+                        );
                     }
                     catch (Exception err)
                     {
@@ -475,7 +479,7 @@ namespace QuantConnect.Brokerages.Backtesting
             _pendingOptionAssignments.Add(option.Symbol);
 
             // assignments always cause a positive change to option contract holdings
-            var request = new SubmitOrderRequest(OrderType.OptionExercise, option.Type, option.Symbol, Math.Abs(quantity), 0m, 0m, Algorithm.UtcTime, "Simulated option assignment before expiration");
+            var request = new SubmitOrderRequest(OrderType.OptionExercise, option.Type, option.Symbol, Math.Abs(quantity), 0m, 0m, 0m, Algorithm.UtcTime, "Simulated option assignment before expiration");
 
             var ticket = Algorithm.Transactions.ProcessRequest(request);
             Log.Trace($"BacktestingBrokerage.ActivateOptionAssignment(): OrderId: {ticket.OrderId}");

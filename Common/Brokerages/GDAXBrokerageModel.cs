@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -20,6 +20,7 @@ using QuantConnect.Securities;
 using QuantConnect.Orders.Fills;
 using QuantConnect.Orders.Fees;
 using System.Linq;
+using QuantConnect.Benchmarks;
 using static QuantConnect.StringExtensions;
 
 namespace QuantConnect.Brokerages
@@ -31,26 +32,26 @@ namespace QuantConnect.Brokerages
     {
         private readonly BrokerageMessageEvent _message = new BrokerageMessageEvent(BrokerageMessageType.Warning, 0, "Brokerage does not support update. You must cancel and re-create instead.");
 
-        // https://support.gdax.com/customer/portal/articles/2725970-trading-rules
+        // https://pro.coinbase.com/markets
         private static readonly Dictionary<string, decimal> MinimumOrderSizes = new Dictionary<string, decimal>
         {
-            { "BTCUSD", 0.001m },
-            { "BTCEUR", 0.001m },
-            { "BTCGBP", 0.001m },
+            { "BTCUSD", 0.0001m },
+            { "BTCEUR", 0.0001m },
+            { "BTCGBP", 0.0001m },
 
             { "BCHUSD", 0.01m },
             { "BCHEUR", 0.01m },
             { "BCHBTC", 0.01m },
 
-            { "ETHUSD", 0.01m },
-            { "ETHEUR", 0.01m },
-            { "ETHGBP", 0.01m },
-            { "ETHBTC", 0.01m },
+            { "ETHUSD", 0.001m },
+            { "ETHEUR", 0.001m },
+            { "ETHGBP", 0.001m },
+            { "ETHBTC", 0.001m },
 
-            { "LTCUSD", 0.1m },
-            { "LTCEUR", 0.1m },
-            { "LTCGBP", 0.1m },
-            { "LTCBTC", 0.1m },
+            { "LTCUSD", 0.01m },
+            { "LTCEUR", 0.01m },
+            { "LTCGBP", 0.01m },
+            { "LTCBTC", 0.01m },
 
             { "XRPUSD", 1m },
             { "XRPEUR", 1m },
@@ -99,6 +100,17 @@ namespace QuantConnect.Brokerages
         {
             // margin trading is not currently supported by GDAX
             return 1m;
+        }
+
+        /// <summary>
+        /// Get the benchmark for this model
+        /// </summary>
+        /// <param name="securities">SecurityService to create the security with if needed</param>
+        /// <returns>The benchmark for this brokerage</returns>
+        public override IBenchmark GetBenchmark(SecurityManager securities)
+        {
+            var symbol = Symbol.Create("BTCUSD", SecurityType.Crypto, Market.GDAX);
+            return SecurityBenchmark.CreateInstance(securities, symbol);
         }
 
         /// <summary>

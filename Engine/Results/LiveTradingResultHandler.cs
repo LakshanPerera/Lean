@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -106,17 +106,8 @@ namespace QuantConnect.Lean.Engine.Results
         /// </summary>
         protected override void Run()
         {
-            var sleepSpan = TimeSpan.FromMilliseconds(100);
-            for (var i = 0; i < 30; i++)
-            {
-                // let's check exit flag while sleeping so we reduce latency on shutdown
-                if (ExitTriggered)
-                {
-                    break;
-                }
-                // give the algorithm time to initialize, else we will log an error right away
-                Thread.Sleep(sleepSpan);
-            }
+            // give the algorithm time to initialize, else we will log an error right away
+            ExitEvent.WaitOne(3000);
 
             // -> 1. Run Primary Sender Loop: Continually process messages from queue as soon as they arrive.
             while (!(ExitTriggered && Messages.Count == 0))
@@ -136,7 +127,7 @@ namespace QuantConnect.Lean.Engine.Results
                     if (Messages.Count == 0)
                     {
                         // prevent thread lock/tight loop when there's no work to be done
-                        Thread.Sleep(100);
+                        ExitEvent.WaitOne(100);
                     }
                 }
                 catch (Exception err)
@@ -500,7 +491,7 @@ namespace QuantConnect.Lean.Engine.Results
             // these are easier to split up, not as big as the chart objects
             var packets = new[]
             {
-                new LiveResultPacket(_job, new LiveResult { Holdings = holdings, Cash = cashbook}),
+                new LiveResultPacket(_job, new LiveResult { Holdings = holdings, CashBook = cashbook}),
                 new LiveResultPacket(_job, new LiveResult
                 {
                     Statistics = deltaStatistics,
@@ -717,7 +708,7 @@ namespace QuantConnect.Lean.Engine.Results
         /// </summary>
         /// <param name="algorithm">Algorithm object matching IAlgorithm interface</param>
         /// <param name="startingPortfolioValue">Algorithm starting capital for statistics calculations</param>
-        public void SetAlgorithm(IAlgorithm algorithm, decimal startingPortfolioValue)
+        public virtual void SetAlgorithm(IAlgorithm algorithm, decimal startingPortfolioValue)
         {
             Algorithm = algorithm;
             _portfolioValue = DailyPortfolioValue = StartingPortfolioValue = startingPortfolioValue;
@@ -971,6 +962,7 @@ namespace QuantConnect.Lean.Engine.Results
 
                 // Set exit flag, update task will send any message before stopping
                 ExitTriggered = true;
+                ExitEvent.Set();
 
                 lock (LogStore)
                 {
@@ -1040,7 +1032,7 @@ namespace QuantConnect.Lean.Engine.Results
         /// This method is triggered from the algorithm manager thread.
         /// </summary>
         /// <remarks>Prime candidate for putting into a base class. Is identical across all result handlers.</remarks>
-        public void ProcessSynchronousEvents(bool forceProcess = false)
+        public virtual void ProcessSynchronousEvents(bool forceProcess = false)
         {
             var time = DateTime.UtcNow;
 

@@ -39,7 +39,7 @@ namespace QuantConnect.Tests.Common.Orders.Fills
         {
             var model = new EquityFillModel();
             var order = new MarketOrder(Symbols.SPY, 100, Noon);
-            var config = CreateTradeBarConfig(Symbols.SPY);
+            var config = CreateQuoteBarConfig(Symbols.SPY);
             var security = new Security(
                 SecurityExchangeHoursTests.CreateUsEquitySecurityExchangeHours(),
                 config,
@@ -52,13 +52,23 @@ namespace QuantConnect.Tests.Common.Orders.Fills
             security.SetLocalTimeKeeper(TimeKeeper.GetLocalTimeKeeper(TimeZones.NewYork));
             security.SetMarketPrice(new IndicatorDataPoint(Symbols.SPY, Noon, 101.123m));
 
-            var fill = model.Fill(new FillModelParameters(
+            var parameters = new FillModelParameters(
                 security,
                 order,
                 new MockSubscriptionDataConfigProvider(config),
-                Time.OneHour)).OrderEvent;
+                Time.OneHour);
+
+            // IndicatorDataPoint is not market data
+            Assert.Throws<InvalidOperationException>(() => model.Fill(parameters),
+                $"Cannot get ask price to perform fill for {security.Symbol} because no market data subscription were found.");
+
+            var bidBar = new Bar(101.123m, 101.123m, 101.123m, 101.123m);
+            var askBar = new Bar(101.234m, 101.234m, 101.234m, 101.234m);
+            security.SetMarketPrice(new QuoteBar(Noon, Symbols.SPY, bidBar, 0, askBar, 0));
+
+            var fill = model.Fill(parameters).OrderEvent;
             Assert.AreEqual(order.Quantity, fill.FillQuantity);
-            Assert.AreEqual(security.Price, fill.FillPrice);
+            Assert.AreEqual(askBar.Close, fill.FillPrice);
             Assert.AreEqual(OrderStatus.Filled, fill.Status);
         }
 
@@ -67,7 +77,7 @@ namespace QuantConnect.Tests.Common.Orders.Fills
         {
             var model = new EquityFillModel();
             var order = new MarketOrder(Symbols.SPY, -100, Noon);
-            var config = CreateTradeBarConfig(Symbols.SPY);
+            var config = CreateQuoteBarConfig(Symbols.SPY);
             var security = new Security(
                 SecurityExchangeHoursTests.CreateUsEquitySecurityExchangeHours(),
                 config,
@@ -80,13 +90,23 @@ namespace QuantConnect.Tests.Common.Orders.Fills
             security.SetLocalTimeKeeper(TimeKeeper.GetLocalTimeKeeper(TimeZones.NewYork));
             security.SetMarketPrice(new IndicatorDataPoint(Symbols.SPY, Noon, 101.123m));
 
-            var fill = model.Fill(new FillModelParameters(
+            var parameters = new FillModelParameters(
                 security,
                 order,
                 new MockSubscriptionDataConfigProvider(config),
-                Time.OneHour)).OrderEvent;
+                Time.OneHour);
+
+            // IndicatorDataPoint is not market data
+            Assert.Throws<InvalidOperationException>(() => model.Fill(parameters),
+                $"Cannot get bid price to perform fill for {security.Symbol} because no market data subscription were found.");
+
+            var bidBar = new Bar(101.123m, 101.123m, 101.123m, 101.123m);
+            var askBar = new Bar(101.234m, 101.234m, 101.234m, 101.234m);
+            security.SetMarketPrice(new QuoteBar(Noon, Symbols.SPY, bidBar, 0, askBar, 0));
+
+            var fill = model.Fill(parameters).OrderEvent;
             Assert.AreEqual(order.Quantity, fill.FillQuantity);
-            Assert.AreEqual(security.Price, fill.FillPrice);
+            Assert.AreEqual(bidBar.Close, fill.FillPrice);
             Assert.AreEqual(OrderStatus.Filled, fill.Status);
         }
 
@@ -308,6 +328,152 @@ namespace QuantConnect.Tests.Common.Orders.Fills
             Assert.AreEqual(OrderStatus.Filled, fill.Status);
         }
 
+        [Test]
+        public void PerformsLimitIfTouchedSell()
+        {
+            var model = new EquityFillModel();
+            var order = new LimitIfTouchedOrder(Symbols.SPY, -100, 101.5m, 105m, Noon);
+            var configTradeBar = CreateTradeBarConfig(Symbols.SPY);
+            var configQuoteBar = new SubscriptionDataConfig(configTradeBar, typeof(QuoteBar));
+            var configProvider = new MockSubscriptionDataConfigProvider(configQuoteBar);
+            var security = new Security(
+                SecurityExchangeHoursTests.CreateUsEquitySecurityExchangeHours(),
+                configTradeBar,
+                new Cash(Currencies.USD, 0, 1m),
+                SymbolProperties.GetDefault(Currencies.USD),
+                ErrorCurrencyConverter.Instance,
+                RegisteredSecurityDataTypesProvider.Null,
+                new SecurityCache()
+            );
+            
+            // Sets price at time zero
+            security.SetLocalTimeKeeper(TimeKeeper.GetLocalTimeKeeper(TimeZones.NewYork));
+            security.SetMarketPrice(new TradeBar(Noon, Symbols.SPY, 100m, 100m, 90m, 90m, 100));
+            configProvider.SubscriptionDataConfigs.Add(configTradeBar); 
+
+            var fill = model.Fill(new FillModelParameters(
+                security,
+                order,
+                configProvider,
+                Time.OneHour)).OrderEvent;
+
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+
+            // Time jump => trigger touched but not limit
+            security.SetMarketPrice(new TradeBar(Noon, Symbols.SPY, 102m, 103m, 102m, 102m, 100));
+            security.SetMarketPrice(new QuoteBar(Noon, Symbols.SPY, 
+                new Bar(101m, 102m, 100m, 100m), 100, // Bid bar
+                new Bar(103m, 104m, 102m, 102m), 100) // Ask bar
+            );
+
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+
+            fill = model.Fill(new FillModelParameters(
+                security,
+                order,
+                configProvider,
+                Time.OneHour)).OrderEvent;
+
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+
+            // Time jump => limit reached, security bought
+            // |---> First, ensure that price data are not used to fill
+            security.SetMarketPrice(new TradeBar(Noon, Symbols.SPY, 100m, 100m, 99m, 99m, 100));
+            fill = model.LimitIfTouchedFill(security, order);
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+            
+            // |---> Lastly, ensure that quote data used to fill
+            security.SetMarketPrice(new QuoteBar(Noon, Symbols.SPY, 
+                    new Bar(105m, 105m, 105m, 105m), 100, // Bid bar
+                    new Bar(105m, 105m, 105m, 105m), 100) // Ask bar
+            );
+            fill = model.LimitIfTouchedFill(security, order);
+            Assert.AreEqual(order.Quantity, fill.FillQuantity);
+            Assert.AreEqual(order.LimitPrice, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.Filled, fill.Status);
+        }
+        
+        [Test]
+        public void PerformsLimitIfTouchedBuy()
+        {
+            var model = new EquityFillModel();
+            var order = new LimitIfTouchedOrder(Symbols.SPY, 100, 101.5m, 100m, Noon);
+            var configTradeBar = CreateTradeBarConfig(Symbols.SPY);
+            var configQuoteBar = new SubscriptionDataConfig(configTradeBar, typeof(QuoteBar));
+            var configProvider = new MockSubscriptionDataConfigProvider(configQuoteBar);
+            var security = new Security(
+                SecurityExchangeHoursTests.CreateUsEquitySecurityExchangeHours(),
+                configTradeBar,
+                new Cash(Currencies.USD, 0, 1m),
+                SymbolProperties.GetDefault(Currencies.USD),
+                ErrorCurrencyConverter.Instance,
+                RegisteredSecurityDataTypesProvider.Null,
+                new SecurityCache()
+            );
+            
+            // Sets price at time zero
+            security.SetLocalTimeKeeper(TimeKeeper.GetLocalTimeKeeper(TimeZones.NewYork));
+            security.SetMarketPrice(new TradeBar(Noon, Symbols.SPY, 102m, 102m, 102m, 102m, 100));
+            configProvider.SubscriptionDataConfigs.Add(configTradeBar); 
+
+            var fill = model.Fill(new FillModelParameters(
+                security,
+                order,
+                configProvider,
+                Time.OneHour)).OrderEvent;
+
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+
+            // Time jump => trigger touched but not limit
+            security.SetMarketPrice(new TradeBar(Noon, Symbols.SPY, 101m, 101m, 100.5m, 101m, 100));
+            security.SetMarketPrice(new QuoteBar(Noon, Symbols.SPY, 
+                new Bar(101m, 101m, 100.5m, 101m), 100, // Bid bar
+                new Bar(101m, 101m, 100.5m, 101m), 100) // Ask bar
+            );
+
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+
+            fill = model.Fill(new FillModelParameters(
+                security,
+                order,
+                configProvider,
+                Time.OneHour)).OrderEvent;
+
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+
+            // Time jump => limit reached, security bought
+            // |---> First, ensure that price data are not used to fill
+            security.SetMarketPrice(new TradeBar(Noon, Symbols.SPY, 100m, 100m, 99m, 99m, 100));
+            fill = model.LimitIfTouchedFill(security, order);
+            Assert.AreEqual(0, fill.FillQuantity);
+            Assert.AreEqual(0, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.None, fill.Status);
+            
+            // |---> Lastly, ensure that quote data used to fill
+            security.SetMarketPrice(new QuoteBar(Noon, Symbols.SPY, 
+                    new Bar(100m, 100m, 100m, 100m), 100, // Bid bar
+                    new Bar(100m, 100m, 100m, 100m), 100) // Ask bar
+            );
+            fill = model.LimitIfTouchedFill(security, order);
+            Assert.AreEqual(order.Quantity, fill.FillQuantity);
+            Assert.AreEqual(order.LimitPrice, fill.FillPrice);
+            Assert.AreEqual(OrderStatus.Filled, fill.Status);
+        }
+        
         [Test]
         public void PerformsStopMarketFillSell()
         {
@@ -735,7 +901,7 @@ namespace QuantConnect.Tests.Common.Orders.Fills
         {
             var model = new EquityFillModel();
             var order = new MarketOrder(Symbols.SPY, -100, Noon.ConvertToUtc(TimeZones.NewYork).AddMinutes(61));
-            var config = CreateTradeBarConfig(Symbols.SPY);
+            var config = CreateTickConfig(Symbols.SPY);
             var security = new Security(
                 SecurityExchangeHoursTests.CreateUsEquitySecurityExchangeHours(),
                 config,
@@ -746,7 +912,7 @@ namespace QuantConnect.Tests.Common.Orders.Fills
                 new SecurityCache()
             );
             security.SetLocalTimeKeeper(TimeKeeper.GetLocalTimeKeeper(TimeZones.NewYork));
-            security.SetMarketPrice(new IndicatorDataPoint(Symbols.SPY, Noon, 101.123m));
+            security.SetMarketPrice(new Tick(Noon, Symbols.SPY, 101.123m, 101.456m));
 
             var fill = model.Fill(new FillModelParameters(
                 security,
@@ -804,6 +970,15 @@ namespace QuantConnect.Tests.Common.Orders.Fills
             Assert.AreEqual(expected, result.Close);
         }
 
+        private SubscriptionDataConfig CreateTickConfig(Symbol symbol)
+        {
+            return new SubscriptionDataConfig(typeof(Tick), symbol, Resolution.Tick, TimeZones.NewYork, TimeZones.NewYork, true, true, false);
+        }
+
+        private SubscriptionDataConfig CreateQuoteBarConfig(Symbol symbol)
+        {
+            return new SubscriptionDataConfig(typeof(QuoteBar), symbol, Resolution.Minute, TimeZones.NewYork, TimeZones.NewYork, true, true, false);
+        }
 
         private SubscriptionDataConfig CreateTradeBarConfig(Symbol symbol)
         {

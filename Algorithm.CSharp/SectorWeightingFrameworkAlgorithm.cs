@@ -85,7 +85,7 @@ namespace QuantConnect.Algorithm.CSharp
         private IEnumerable<Symbol> SelectCoarse(IEnumerable<CoarseFundamental> coarse)
         {
             return Time.Date < new DateTime(2014, 4, 4)
-                // IndustryTemplateCode of AAPL and IBM is N and AIG is I 
+                // IndustryTemplateCode of AAPL and IBM is N and AIG is I
                 ? _targets.Keys.Take(3)
                 // IndustryTemplateCode of GOOG is N and BAC is B. SPY have no fundamentals
                 : _targets.Keys.Skip(3);
@@ -120,7 +120,7 @@ namespace QuantConnect.Algorithm.CSharp
             {"Loss Rate", "67%"},
             {"Win Rate", "33%"},
             {"Profit-Loss Ratio", "8.58"},
-            {"Alpha", "-3.254"},
+            {"Alpha", "-3.253"},
             {"Beta", "-2.921"},
             {"Annual Standard Deviation", "0.386"},
             {"Annual Variance", "0.149"},
@@ -128,6 +128,8 @@ namespace QuantConnect.Algorithm.CSharp
             {"Tracking Error", "0.518"},
             {"Treynor Ratio", "0.34"},
             {"Total Fees", "$32.42"},
+            {"Estimated Strategy Capacity", "$53000000.00"},
+            {"Lowest Capacity Asset", "AIG R735QTJ8XC9X"},
             {"Fitness Score", "0.093"},
             {"Kelly Criterion Estimate", "-50.377"},
             {"Kelly Criterion Probability Value", "0.689"},
@@ -140,14 +142,14 @@ namespace QuantConnect.Algorithm.CSharp
             {"Long Insight Count", "7"},
             {"Short Insight Count", "0"},
             {"Long/Short Ratio", "100%"},
-            {"Estimated Monthly Alpha Value", "$-731497.1"},
-            {"Total Accumulated Estimated Alpha Value", "$-52830.34"},
-            {"Mean Population Estimated Insight Value", "$-17610.11"},
+            {"Estimated Monthly Alpha Value", "$-3516436"},
+            {"Total Accumulated Estimated Alpha Value", "$-253964.9"},
+            {"Mean Population Estimated Insight Value", "$-84654.95"},
             {"Mean Population Direction", "33.3333%"},
             {"Mean Population Magnitude", "0%"},
             {"Rolling Averaged Population Direction", "33.3333%"},
             {"Rolling Averaged Population Magnitude", "0%"},
-            {"OrderListHash", "549146804"}
+            {"OrderListHash", "55ea591f69e39b0cbb9d9bc2f9fe2f10"}
         };
     }
 }

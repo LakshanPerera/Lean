@@ -38,7 +38,7 @@ namespace QuantConnect.Tests.Common
         [Test]
         public void UnixTimeStampMillisecondsToDateTimeHasSubMillisecondPrecision()
         {
-            const double stamp = 1520711961000.55;
+            const decimal stamp = 1520711961000.55m;
             var expected = new DateTime(2018, 3, 10, 19, 59, 21, 0).AddTicks(5500);
             var time = Time.UnixMillisecondTimeStampToDateTime(stamp);
             Assert.AreEqual(expected, time);
@@ -232,6 +232,38 @@ namespace QuantConnect.Tests.Common
         public void ParseDateAndTime(string parseDate, int year, int month, int day, int hour, int minute)
         {
             Assert.AreEqual(new DateTime(year, month, day, hour, minute, 0), Time.ParseDate(parseDate));
+        }
+
+        [Test]
+        [TestCase("19981231-23:59:59", 1998, 12, 31, 23, 59, 59)]
+        [TestCase("19990101-00:00:00", 1999, 01, 01, 00, 00, 00)]
+        [TestCase("20210121-21:32:18", 2021, 01, 21, 21, 32, 18)]
+        public void ParseFIXUtcTimestamp(string parseDate, int year, int month, int day, int hour, int minute, int second)
+        {
+            var expected = new DateTime(year, month, day, hour, minute, second);
+            Assert.AreEqual(
+                expected,
+                Parse.DateTimeExact(parseDate, DateFormat.FIX));
+
+            Assert.AreEqual(
+                expected,
+                Time.ParseFIXUtcTimestamp(parseDate));
+        }
+
+        [Test]
+        [TestCase("19981231-23:59:59.000", 1998, 12, 31, 23, 59, 59, 0)]
+        [TestCase("19990101-00:00:00.000", 1999, 01, 01, 00, 00, 00, 0)]
+        [TestCase("20210121-21:32:18.610", 2021, 01, 21, 21, 32, 18, 610)]
+        public void ParseFIXUtcTimestampWithMillisecond(string parseDate, int year, int month, int day, int hour, int minute, int second, int millisecond)
+        {
+            var expected = new DateTime(year, month, day, hour, minute, second, millisecond);
+            Assert.AreEqual(
+                expected, 
+                Parse.DateTimeExact(parseDate, DateFormat.FIXWithMillisecond));
+
+            Assert.AreEqual(
+                expected,
+                Time.ParseFIXUtcTimestamp(parseDate));
         }
 
         private static IEnumerable<TestCaseData> ForexHistoryDates => new List<TestCaseData>

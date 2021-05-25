@@ -37,8 +37,9 @@ using NodaTime;
 using QuantConnect.IBAutomater;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Orders.TimeInForces;
-using QuantConnect.Securities.Future;
 using QuantConnect.Securities.FutureOption;
+using QuantConnect.Securities.Index;
+using QuantConnect.Securities.IndexOption;
 using QuantConnect.Securities.Option;
 using Bar = QuantConnect.Data.Market.Bar;
 using HistoryRequest = QuantConnect.Data.HistoryRequest;
@@ -55,6 +56,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
         // Existing orders created in TWS can *only* be cancelled/modified when connected with ClientId = 0
         private const int ClientId = 0;
+        private const string _futuresCmeCrypto = "CMECRYPTO";
 
         // next valid order id (or request id, or ticker id) for this client
         private int _nextValidId;
@@ -64,6 +66,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         private readonly string _account;
         private readonly string _host;
         private readonly IAlgorithm _algorithm;
+        private readonly bool _loadExistingHoldings;
         private readonly IOrderProvider _orderProvider;
         private readonly ISecurityProvider _securityProvider;
         private readonly IDataAggregator _aggregator;
@@ -76,6 +79,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         // Notifies the thread reading information from Gateway/TWS whenever there are messages ready to be consumed
         private readonly EReaderSignal _signal = new EReaderMonitorSignal();
 
+        private readonly ManualResetEvent _connectEvent = new ManualResetEvent(false);
         private readonly ManualResetEvent _waitForNextValidId = new ManualResetEvent(false);
         private readonly ManualResetEvent _accountHoldingsResetEvent = new ManualResetEvent(false);
         private Exception _accountHoldingsLastException;
@@ -136,18 +140,18 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         public override bool IsConnected => _client != null && _client.Connected && !_stateManager.Disconnected1100Fired;
 
         /// <summary>
-        /// Returns true if the connected user is a financial advisor or non-disclosed broker
+        /// Returns true if the connected user is a financial advisor
         /// </summary>
         public bool IsFinancialAdvisor => IsMasterAccount(_account);
 
         /// <summary>
-        /// Returns true if the account is a financial advisor or non-disclosed broker master account
+        /// Returns true if the account is a financial advisor master account
         /// </summary>
         /// <param name="account">The account code</param>
         /// <returns>True if the account is a master account</returns>
         public static bool IsMasterAccount(string account)
         {
-            return account.Contains("F") || account.Contains("I");
+            return account.Contains("F");
         }
 
         /// <summary>
@@ -228,6 +232,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <param name="password">The login password</param>
         /// <param name="tradingMode">The trading mode: 'live' or 'paper'</param>
         /// <param name="agentDescription">Used for Rule 80A describes the type of trader.</param>
+        /// <param name="loadExistingHoldings">False will ignore existing security holdings from being loaded.</param>
         public InteractiveBrokersBrokerage(
             IAlgorithm algorithm,
             IOrderProvider orderProvider,
@@ -242,9 +247,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             string userName,
             string password,
             string tradingMode,
-            string agentDescription = IB.AgentDescription.Individual)
+            string agentDescription = IB.AgentDescription.Individual,
+            bool loadExistingHoldings = true)
             : base("Interactive Brokers Brokerage")
         {
+            _loadExistingHoldings = loadExistingHoldings;
             _algorithm = algorithm;
             _orderProvider = orderProvider;
             _securityProvider = securityProvider;
@@ -267,6 +274,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             _ibAutomater.OutputDataReceived += OnIbAutomaterOutputDataReceived;
             _ibAutomater.ErrorDataReceived += OnIbAutomaterErrorDataReceived;
             _ibAutomater.Exited += OnIbAutomaterExited;
+            _ibAutomater.Restarted += OnIbAutomaterRestarted;
 
             CheckIbAutomaterError(_ibAutomater.Start(false));
 
@@ -304,12 +312,14 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
             _client.ConnectAck += (sender, e) =>
             {
-                Log.Trace("InteractiveBrokersBrokerage.HandleConnectAck(): API client connected.");
+                Log.Trace($"InteractiveBrokersBrokerage.HandleConnectAck(): API client connected [Server Version: {_client.ClientSocket.ServerVersion}].");
+                _connectEvent.Set();
             };
 
             _client.ConnectionClosed += (sender, e) =>
             {
-                Log.Trace("InteractiveBrokersBrokerage.HandleConnectionClosed(): API client disconnected.");
+                Log.Trace($"InteractiveBrokersBrokerage.HandleConnectionClosed(): API client disconnected [Server Version: {_client.ClientSocket.ServerVersion}].");
+                _connectEvent.Set();
             };
         }
 
@@ -685,8 +695,16 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                         Thread.Sleep(2500);
                     }
 
+                    _connectEvent.Reset();
+
                     // we're going to try and connect several times, if successful break
+                    Log.Trace("InteractiveBrokersBrokerage.Connect(): calling _client.ClientSocket.eConnect()");
                     _client.ClientSocket.eConnect(_host, _port, ClientId);
+
+                    if (!_connectEvent.WaitOne(TimeSpan.FromSeconds(15)))
+                    {
+                        Log.Error("InteractiveBrokersBrokerage.Connect(): timeout waiting for connect callback");
+                    }
 
                     // create the message processing thread
                     var reader = new EReader(_client.ClientSocket, _signal);
@@ -989,7 +1007,21 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
             else
             {
-                var ibOrder = ConvertOrder(order, contract, ibOrderId);
+                var outsideRth = false;
+
+                if (order.Type == OrderType.Limit ||
+                    order.Type == OrderType.LimitIfTouched ||
+                    order.Type == OrderType.StopMarket ||
+                    order.Type == OrderType.StopLimit)
+                {
+                    var orderProperties = order.Properties as InteractiveBrokersOrderProperties;
+                    if (orderProperties != null)
+                    {
+                        outsideRth = orderProperties.OutsideRegularTradingHours;
+                    }
+                }
+
+                var ibOrder = ConvertOrder(order, contract, ibOrderId, outsideRth);
                 _client.ClientSocket.placeOrder(ibOrder.OrderId, contract, ibOrder);
             }
         }
@@ -999,7 +1031,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             return $"{contract.ToString().ToUpperInvariant()} {contract.LastTradeDateOrContractMonth.ToStringInvariant()} {contract.Strike.ToStringInvariant()} {contract.Right}";
         }
 
-        private static string GetContractDescription(Contract contract)
+        /// <summary>
+        /// Get Contract Description
+        /// </summary>
+        /// <param name="contract">Contract to retrieve description of</param>
+        /// <returns>string description</returns>
+        public static string GetContractDescription(Contract contract)
         {
             return $"{contract} {contract.PrimaryExch ?? string.Empty} {contract.LastTradeDateOrContractMonth.ToStringInvariant()} {contract.Strike.ToStringInvariant()} {contract.Right}";
         }
@@ -1030,9 +1067,9 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 return details.Contract.TradingClass;
             }
 
-            if (symbol.SecurityType == SecurityType.FutureOption)
+            if (symbol.SecurityType == SecurityType.FutureOption || symbol.SecurityType == SecurityType.IndexOption)
             {
-                // Futures options trading class is the same as the FOP ticker.
+                // Futures options and Index Options trading class is the same as the FOP ticker.
                 // This is required in order to resolve the contract details successfully.
                 // We let this method complete even though we assign twice so that the
                 // contract details are added to the cache and won't require another lookup.
@@ -1139,6 +1176,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             return contractDetailsList.FirstOrDefault();
         }
 
+        /// <summary>
+        /// Find contract details given a ticker and contract
+        /// </summary>
+        /// <param name="contract">Contract we are searching for</param>
+        /// <param name="ticker">Ticker of this contract</param>
+        /// <returns></returns>
         public IEnumerable<ContractDetails> FindContracts(Contract contract, string ticker)
         {
             const int timeout = 60; // sec
@@ -1202,6 +1245,9 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// </summary>
         private void HandleError(object sender, IB.ErrorEventArgs e)
         {
+            // handles the 'connection refused' connect cases
+            _connectEvent.Set();
+
             // https://www.interactivebrokers.com/en/software/api/apiguide/tables/api_message_codes.htm
 
             var requestId = e.Id;
@@ -1276,6 +1322,14 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             else if (errorCode == 506)
             {
                 Log.Trace("InteractiveBrokersBrokerage.HandleError(): Server Version: " + _client.ClientSocket.ServerVersion);
+
+                if (!_client.ClientSocket.IsConnected())
+                {
+                    // ignore the 506 error if we are not yet connected, will be checked by IB API later
+                    // we have occasionally experienced this error after restarting IBGateway after the nightly reset
+                    Log.Trace($"InteractiveBrokersBrokerage.HandleError(): Not connected, ignoring error, ErrorCode: {errorCode} - {errorMsg}");
+                    return;
+                }
             }
 
             if (InvalidatingCodes.Contains(errorCode))
@@ -1300,7 +1354,10 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 }
             }
 
-            OnMessage(new BrokerageMessageEvent(brokerageMessageType, errorCode, errorMsg));
+            if (!FilteredCodes.Contains(errorCode))
+            {
+                OnMessage(new BrokerageMessageEvent(brokerageMessageType, errorCode, errorMsg));
+            }
         }
 
         /// <summary>
@@ -1645,8 +1702,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             try
             {
                 _accountHoldingsResetEvent.Reset();
-                var holding = CreateHolding(e);
-                _accountData.AccountHoldings[holding.Symbol.Value] = holding;
+                if (_loadExistingHoldings)
+                {
+                    var holding = CreateHolding(e);
+                    _accountData.AccountHoldings[holding.Symbol.Value] = holding;
+                }
             }
             catch (Exception exception)
             {
@@ -1667,7 +1727,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <summary>
         /// Converts a QC order to an IB order
         /// </summary>
-        private IBApi.Order ConvertOrder(Order order, Contract contract, int ibOrderId)
+        private IBApi.Order ConvertOrder(Order order, Contract contract, int ibOrderId, bool outsideRth)
         {
             var ibOrder = new IBApi.Order
             {
@@ -1680,7 +1740,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 AllOrNone = false,
                 Tif = ConvertTimeInForce(order),
                 Transmit = true,
-                Rule80A = _agentDescription
+                Rule80A = _agentDescription,
+                OutsideRth = outsideRth
             };
 
             var gtdTimeInForce = order.TimeInForce as GoodTilDateTimeInForce;
@@ -1710,6 +1771,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             var limitOrder = order as LimitOrder;
             var stopMarketOrder = order as StopMarketOrder;
             var stopLimitOrder = order as StopLimitOrder;
+            var limitIfTouchedOrder = order as LimitIfTouchedOrder;
             if (limitOrder != null)
             {
                 ibOrder.LmtPrice = Convert.ToDouble(RoundPrice(limitOrder.LimitPrice, GetMinTick(contract, order.Symbol)));
@@ -1723,6 +1785,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 var minTick = GetMinTick(contract, order.Symbol);
                 ibOrder.LmtPrice = Convert.ToDouble(RoundPrice(stopLimitOrder.LimitPrice, minTick));
                 ibOrder.AuxPrice = Convert.ToDouble(RoundPrice(stopLimitOrder.StopPrice, minTick));
+            }
+            else if (limitIfTouchedOrder != null)
+            {
+                var minTick = GetMinTick(contract, order.Symbol);
+                ibOrder.LmtPrice = Convert.ToDouble(RoundPrice(limitIfTouchedOrder.LimitPrice, minTick));
+                ibOrder.AuxPrice = Convert.ToDouble(RoundPrice(limitIfTouchedOrder.TriggerPrice, minTick));
             }
 
             // add financial advisor properties
@@ -1825,6 +1893,15 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                         );
                     break;
 
+                case OrderType.LimitIfTouched:
+                    order = new LimitIfTouchedOrder(mappedSymbol,
+                        Convert.ToInt32(ibOrder.TotalQuantity) * quantitySign,
+                        Convert.ToDecimal(ibOrder.AuxPrice),
+                        Convert.ToDecimal(ibOrder.LmtPrice),
+                        new DateTime()
+                    );
+                    break;
+
                 default:
                     throw new InvalidEnumArgumentException("orderType", (int)orderType, typeof(OrderType));
             }
@@ -1868,9 +1945,20 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 contract.PrimaryExch = GetPrimaryExchange(contract, symbol);
             }
 
-            if (symbol.ID.SecurityType == SecurityType.Option || symbol.ID.SecurityType == SecurityType.FutureOption)
+            // Indexes requires that the exchange be specified exactly
+            if (symbol.ID.SecurityType == SecurityType.Index)
             {
-                contract.LastTradeDateOrContractMonth = symbol.ID.Date.ToStringInvariant(DateFormat.EightCharacter);
+                contract.Exchange = IndexSymbol.GetIndexExchange(symbol);
+            }
+
+            if (symbol.ID.SecurityType.IsOption())
+            {
+                // Subtract a day from Index Options, since their last trading date
+                // is on the day before the expiry.
+                contract.LastTradeDateOrContractMonth = symbol.ID.Date
+                    .AddDays(symbol.SecurityType == SecurityType.IndexOption ? -1 : 0)
+                    .ToStringInvariant(DateFormat.EightCharacter);
+
                 contract.Right = symbol.ID.OptionRight == OptionRight.Call ? IB.RightType.Call : IB.RightType.Put;
                 contract.Strike = Convert.ToDouble(symbol.ID.StrikePrice);
                 contract.Symbol = ibSymbol;
@@ -1891,10 +1979,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
                 contract.Symbol = ibSymbol;
                 contract.LastTradeDateOrContractMonth = symbol.ID.Date.ToStringInvariant(DateFormat.EightCharacter);
-
-                contract.Exchange = _futuresExchanges.ContainsKey(symbol.ID.Market) ?
-                                        _futuresExchanges[symbol.ID.Market] :
-                                        symbol.ID.Market;
+                contract.Exchange = GetSymbolExchange(symbol);
 
                 var symbolProperties = _symbolPropertiesDatabase.GetSymbolProperties(
                     symbol.ID.Market,
@@ -1921,7 +2006,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 case IB.ActionSide.Sell: return OrderDirection.Sell;
                 case IB.ActionSide.Undefined: return OrderDirection.Hold;
                 default:
-                    throw new ArgumentException(direction, "direction");
+                    throw new ArgumentException(direction, nameof(direction));
             }
         }
 
@@ -1936,7 +2021,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 case OrderDirection.Sell: return IB.ActionSide.Sell;
                 case OrderDirection.Hold: return IB.ActionSide.Undefined;
                 default:
-                    throw new InvalidEnumArgumentException("direction", (int)direction, typeof(OrderDirection));
+                    throw new InvalidEnumArgumentException(nameof(direction), (int)direction, typeof(OrderDirection));
             }
         }
 
@@ -1951,10 +2036,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 case OrderType.Limit:           return IB.OrderType.Limit;
                 case OrderType.StopMarket:      return IB.OrderType.Stop;
                 case OrderType.StopLimit:       return IB.OrderType.StopLimit;
+                case OrderType.LimitIfTouched:  return IB.OrderType.LimitIfTouched;
                 case OrderType.MarketOnOpen:    return IB.OrderType.Market;
                 case OrderType.MarketOnClose:   return IB.OrderType.MarketOnClose;
                 default:
-                    throw new InvalidEnumArgumentException("type", (int)type, typeof(OrderType));
+                    throw new InvalidEnumArgumentException(nameof(type), (int)type, typeof(OrderType));
             }
         }
 
@@ -1968,6 +2054,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 case IB.OrderType.Limit:            return OrderType.Limit;
                 case IB.OrderType.Stop:             return OrderType.StopMarket;
                 case IB.OrderType.StopLimit:        return OrderType.StopLimit;
+                case IB.OrderType.LimitIfTouched:   return OrderType.LimitIfTouched;
                 case IB.OrderType.MarketOnClose:    return OrderType.MarketOnClose;
 
                 case IB.OrderType.Market:
@@ -2109,7 +2196,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
                 // not sure how to map these guys
                 default:
-                    throw new ArgumentException(status, "status");
+                    throw new ArgumentException(status, nameof(status));
             }
         }
 
@@ -2124,7 +2211,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     return IB.SecurityType.Stock;
 
                 case SecurityType.Option:
+                case SecurityType.IndexOption:
                      return IB.SecurityType.Option;
+
+                case SecurityType.Index:
+                    return IB.SecurityType.Index;
 
                 case SecurityType.FutureOption:
                     return IB.SecurityType.FutureOption;
@@ -2143,7 +2234,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <summary>
         /// Maps SecurityType enum
         /// </summary>
-        private static SecurityType ConvertSecurityType(Contract contract)
+        private SecurityType ConvertSecurityType(Contract contract)
         {
             switch (contract.SecType)
             {
@@ -2151,7 +2242,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     return SecurityType.Equity;
 
                 case IB.SecurityType.Option:
-                    return SecurityType.Option;
+                    return IndexOptionSymbol.IsIndexOption(contract.Symbol)
+                        ? SecurityType.IndexOption
+                        : SecurityType.Option;
+
+                case IB.SecurityType.Index:
+                    return SecurityType.Index;
 
                 case IB.SecurityType.FutureOption:
                     return SecurityType.FutureOption;
@@ -2240,7 +2336,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             return new Holding
             {
                 Symbol = symbol,
-                Type = ConvertSecurityType(e.Contract),
+                Type = symbol.SecurityType,
                 Quantity = e.Position,
                 AveragePrice = Convert.ToDecimal(e.AverageCost) / multiplier,
                 MarketPrice = Convert.ToDecimal(e.MarketPrice),
@@ -2261,11 +2357,27 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 var market = InteractiveBrokersBrokerageModel.DefaultMarketMap[securityType];
                 var isFutureOption = contract.SecType == IB.SecurityType.FutureOption;
 
+                if (securityType.IsOption() && contract.LastTradeDateOrContractMonth == "0")
+                {
+                    // Try our best to recover from a malformed contract.
+                    // You can read more about malformed contracts at the ParseMalformedContract method's documentation.
+                    var exchange = GetSymbolExchange(securityType, market);
+
+                    contract = InteractiveBrokersSymbolMapper.ParseMalformedContractOptionSymbol(contract, exchange);
+                    ibSymbol = contract.Symbol;
+                }
+                else if (securityType == SecurityType.Future && contract.LastTradeDateOrContractMonth == "0")
+                {
+                    contract = _symbolMapper.ParseMalformedContractFutureSymbol(contract, _symbolPropertiesDatabase);
+                    ibSymbol = contract.Symbol;
+                }
+
                 // Handle future options as a Future, up until we actually return the future.
                 if (isFutureOption || securityType == SecurityType.Future)
                 {
                     var leanSymbol = _symbolMapper.GetLeanRootSymbol(ibSymbol);
                     var defaultMarket = market;
+
                     if (!_symbolPropertiesDatabase.TryGetMarket(leanSymbol, SecurityType.Future, out market))
                     {
                         market = defaultMarket;
@@ -2278,12 +2390,18 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                         return _symbolMapper.GetLeanSymbol(ibSymbol, SecurityType.Future, market, contractExpiryDate);
                     }
 
-                    // Create a canonical future Symbol for lookup in the FuturesExpiryFunctions helper class.
-                    // We then get the delta between the futures option's expiry month vs. the future's expiry month.
-                    var canonicalFutureSymbol = _symbolMapper.GetLeanSymbol(ibSymbol, SecurityType.Future, market, SecurityIdentifier.DefaultDate);
-                    var futureExpiryFunction = FuturesExpiryFunctions.FuturesExpiryFunction(canonicalFutureSymbol);
-                    var futureContractExpiryDate = futureExpiryFunction(FuturesOptionsExpiryFunctions.GetFutureContractMonth(canonicalFutureSymbol, contractExpiryDate));
-                    var futureSymbol = Symbol.CreateFuture(canonicalFutureSymbol.ID.Symbol, canonicalFutureSymbol.ID.Market, futureContractExpiryDate);
+                    // Get the *actual* futures contract that this futures options contract has as its underlying.
+                    // Futures options contracts can have a different contract month from their underlying future.
+                    // As such, we resolve the underlying future to the future with the correct contract month.
+                    // There's a chance this can fail, and if it does, we throw because this Symbol can't be
+                    // represented accurately in Lean.
+                    var futureSymbol = FuturesOptionsUnderlyingMapper.GetUnderlyingFutureFromFutureOption(leanSymbol, market, contractExpiryDate, _algorithm.Time);
+                    if (futureSymbol == null)
+                    {
+                        // This is the worst case scenario, because we didn't find a matching futures contract for the FOP.
+                        // Note that this only applies to CBOT symbols for now.
+                        throw new ArgumentException($"The Future Option contract: {GetContractDescription(contract)} with trading class: {contract.TradingClass} has no matching underlying future contract.");
+                    }
 
                     var right = contract.Right == IB.RightType.Call ? OptionRight.Call : OptionRight.Put;
                     var strike = Convert.ToDecimal(contract.Strike);
@@ -2291,7 +2409,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     return Symbol.CreateOption(futureSymbol, market, OptionStyle.American, right, strike, contractExpiryDate);
                 }
 
-                if (securityType == SecurityType.Option)
+                if (securityType.IsOption())
                 {
                     var expiryDate = DateTime.ParseExact(contract.LastTradeDateOrContractMonth, DateFormat.EightCharacter, CultureInfo.InvariantCulture);
                     var right = contract.Right == IB.RightType.Call ? OptionRight.Call : OptionRight.Put;
@@ -2382,7 +2500,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                             var subscribeSymbol = symbol;
 
                             // we subscribe to the underlying
-                            if ((symbol.ID.SecurityType == SecurityType.Option || symbol.ID.SecurityType == SecurityType.FutureOption) && symbol.IsCanonical())
+                            if (symbol.ID.SecurityType.IsOption() && symbol.IsCanonical())
                             {
                                 subscribeSymbol = symbol.Underlying;
                                 _underlyings.Add(subscribeSymbol, symbol);
@@ -2456,7 +2574,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                         {
                             Log.Trace("InteractiveBrokersBrokerage.Unsubscribe(): Unsubscribe Request: " + symbol.Value);
 
-                            if ((symbol.ID.SecurityType == SecurityType.Option || symbol.ID.SecurityType == SecurityType.FutureOption) && symbol.ID.StrikePrice == 0.0m)
+                            if (symbol.ID.SecurityType.IsOption() && symbol.ID.StrikePrice == 0.0m)
                             {
                                 _underlyings.Remove(symbol.Underlying);
                             }
@@ -2514,6 +2632,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 (securityType == SecurityType.Equity && market == Market.USA) ||
                 (securityType == SecurityType.Forex && market == Market.Oanda) ||
                 (securityType == SecurityType.Option && market == Market.USA) ||
+                (securityType == SecurityType.IndexOption && market == Market.USA) ||
+                (securityType == SecurityType.Index && market == Market.USA) ||
                 (securityType == SecurityType.FutureOption) ||
                 (securityType == SecurityType.Future);
         }
@@ -2738,7 +2858,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 case IBApi.TickType.OPTION_CALL_OPEN_INTEREST:
                 case IBApi.TickType.OPTION_PUT_OPEN_INTEREST:
 
-                    if (symbol.ID.SecurityType != SecurityType.Option && symbol.ID.SecurityType != SecurityType.FutureOption && symbol.ID.SecurityType != SecurityType.Future)
+                    if (!symbol.ID.SecurityType.IsOption() && symbol.ID.SecurityType != SecurityType.Future)
                     {
                         return;
                     }
@@ -2795,7 +2915,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             {
                 lookupName = symbol.ID.Symbol;
             }
-            else if (symbol.SecurityType == SecurityType.Option)
+            else if (symbol.SecurityType == SecurityType.Option || symbol.SecurityType == SecurityType.IndexOption)
             {
                 lookupName = symbol.Underlying.Value;
             }
@@ -2819,7 +2939,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
             var symbols = new List<Symbol>();
 
-            if (symbol.SecurityType == SecurityType.Option || symbol.SecurityType == SecurityType.FutureOption)
+            if (symbol.SecurityType.IsOption())
             {
                 // IB requests for full option chains are rate limited and responses can be delayed up to a minute for each underlying,
                 // so we fetch them from the OCC website instead of using the IB API.
@@ -2860,9 +2980,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             // Try to remove options or futures contracts that have expired
             if (!includeExpired)
             {
-                if (symbol.SecurityType == SecurityType.Option ||
-                    symbol.SecurityType == SecurityType.Future ||
-                    symbol.SecurityType == SecurityType.FutureOption)
+                if (symbol.SecurityType.IsOption() || symbol.SecurityType == SecurityType.Future)
                 {
                     var removedSymbols = symbols.Where(x => x.ID.Date < GetRealTimeTickTime(x).Date).ToHashSet();
 
@@ -2879,19 +2997,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         }
 
         /// <summary>
-        /// Returns whether the time can be advanced or not.
+        /// Returns whether selection can take place or not.
         /// </summary>
-        /// <param name="securityType">The security type</param>
-        /// <returns>true if the time can be advanced</returns>
-        public bool CanAdvanceTime(SecurityType securityType)
+        /// <returns>True if selection can take place</returns>
+        public bool CanPerformSelection()
         {
-            if (securityType == SecurityType.Future)
-            {
-                // we need to call the IB API only for futures
-                return !_ibAutomater.IsWithinScheduledServerResetTimes() && IsConnected;
-            }
-
-            return true;
+            return !_ibAutomater.IsWithinScheduledServerResetTimes() && IsConnected;
         }
 
         /// <summary>
@@ -2902,22 +3013,32 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <remarks>For IB history limitations see https://www.interactivebrokers.com/en/software/api/apiguide/tables/historical_data_limitations.htm </remarks>
         public override IEnumerable<BaseData> GetHistory(HistoryRequest request)
         {
+            if (!IsConnected)
+            {
+                OnMessage(
+                    new BrokerageMessageEvent(
+                        BrokerageMessageType.Warning,
+                        "GetHistoryWhenDisconnected",
+                        "History requests cannot be submitted when disconnected."));
+                yield break;
+            }
+
             // skipping universe and canonical symbols
             if (!CanSubscribe(request.Symbol) ||
-                (request.Symbol.ID.SecurityType == SecurityType.Option && request.Symbol.IsCanonical()) ||
-                (request.Symbol.ID.SecurityType == SecurityType.FutureOption && request.Symbol.IsCanonical()) ||
-                (request.Symbol.ID.SecurityType == SecurityType.Future && request.Symbol.IsCanonical()))
+                (request.Symbol.ID.SecurityType.IsOption() && request.Symbol.IsCanonical()))
             {
                 yield break;
             }
 
             // skip invalid security types
             if (request.Symbol.SecurityType != SecurityType.Equity &&
+                request.Symbol.SecurityType != SecurityType.Index &&
                 request.Symbol.SecurityType != SecurityType.Forex &&
                 request.Symbol.SecurityType != SecurityType.Cfd &&
                 request.Symbol.SecurityType != SecurityType.Future &&
                 request.Symbol.SecurityType != SecurityType.FutureOption &&
-                request.Symbol.SecurityType != SecurityType.Option)
+                request.Symbol.SecurityType != SecurityType.Option &&
+                request.Symbol.SecurityType != SecurityType.IndexOption)
             {
                 yield break;
             }
@@ -3104,25 +3225,39 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <summary>
         /// Gets the exchange the Symbol should be routed to
         /// </summary>
-        /// <param name="symbol">Symbol to route</param>
-        private string GetSymbolExchange(Symbol symbol)
+        /// <param name="securityType">SecurityType of the Symbol</param>
+        /// <param name="market">Market of the Symbol</param>
+        /// <param name="ticker">Ticker for the symbol</param>
+        private string GetSymbolExchange(SecurityType securityType, string market, string ticker = null)
         {
-            switch (symbol.SecurityType)
+            switch (securityType)
             {
                 case SecurityType.Option:
+                case SecurityType.IndexOption:
                     // Regular equity options uses default, in this case "Smart"
                     goto default;
 
                 // Futures options share the same market as the underlying Symbol
                 case SecurityType.FutureOption:
                 case SecurityType.Future:
-                    return _futuresExchanges.ContainsKey(symbol.ID.Market)
-                        ? _futuresExchanges[symbol.ID.Market]
-                        : symbol.ID.Market;
+                    return _futuresExchanges.ContainsKey(market)
+                        ? ticker == "BTC"
+                            ? _futuresCmeCrypto
+                            : _futuresExchanges[market]
+                        : market;
 
                 default:
                     return "Smart";
             }
+        }
+
+        /// <summary>
+        /// Gets the exchange the Symbol should be routed to
+        /// </summary>
+        /// <param name="symbol">Symbol to route</param>
+        private string GetSymbolExchange(Symbol symbol)
+        {
+            return GetSymbolExchange(symbol.SecurityType, symbol.ID.Market, symbol.ID.Symbol);
         }
 
         /// <summary>
@@ -3164,18 +3299,61 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         {
             Log.Trace($"InteractiveBrokersBrokerage.OnIbAutomaterExited(): Exit code: {e.ExitCode}");
 
+            _stateManager.Reset();
+
             // check if IBGateway was closed because of an IBAutomater error
             var result = _ibAutomater.GetLastStartResult();
             CheckIbAutomaterError(result, false);
 
             if (!result.HasError && !_isDisposeCalled)
             {
-                // IBGateway was closed by the v978+ automatic logoff or it was closed manually (less likely)
-                Log.Trace("InteractiveBrokersBrokerage.OnIbAutomaterExited(): IBGateway close detected, restarting IBAutomater and reconnecting...");
+                // IBGateway was closed by IBAutomater because the auto-restart token expired or it was closed manually (less likely)
+                Log.Trace("InteractiveBrokersBrokerage.OnIbAutomaterExited(): IBGateway close detected, restarting IBAutomater in 10 seconds...");
 
-                Disconnect();
-                CheckIbAutomaterError(_ibAutomater.Start(false));
-                Connect();
+                Thread.Sleep(TimeSpan.FromSeconds(10));
+
+                Log.Trace("InteractiveBrokersBrokerage.OnIbAutomaterExited(): restarting...");
+
+                try
+                {
+                    Disconnect();
+
+                    CheckIbAutomaterError(_ibAutomater.Start(false));
+
+                    Connect();
+                }
+                catch (Exception exception)
+                {
+                    OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Error, "IBAutomaterRestartError", exception.ToString()));
+                }
+            }
+        }
+
+        private void OnIbAutomaterRestarted(object sender, EventArgs e)
+        {
+            Log.Trace("InteractiveBrokersBrokerage.OnIbAutomaterRestarted()");
+
+            _stateManager.Reset();
+
+            // check if IBGateway was closed because of an IBAutomater error
+            var result = _ibAutomater.GetLastStartResult();
+            CheckIbAutomaterError(result, false);
+
+            if (!result.HasError && !_isDisposeCalled)
+            {
+                // IBGateway was restarted automatically
+                Log.Trace("InteractiveBrokersBrokerage.OnIbAutomaterRestarted(): IBGateway restart detected, reconnecting...");
+
+                try
+                {
+                    Disconnect();
+
+                    Connect();
+                }
+                catch (Exception exception)
+                {
+                    OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Error, "IBAutomaterAutoRestartError", exception.ToString()));
+                }
             }
         }
 
@@ -3245,6 +3423,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         {
             105, 106, 107, 109, 110, 111, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 129, 131, 132, 133, 134, 135, 136, 137, 140, 141, 146, 147, 148, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 163, 167, 168, 201, 313,314,315,325,328,329,334,335,336,337,338,339,340,341,342,343,345,347,348,349,350,352,353,355,356,358,359,360,361,362,363,364,367,368,369,370,371,372,373,374,375,376,377,378,379,380,382,383,387,388,389,390,391,392,393,394,395,396,397,398,400,401,402,403,405,406,407,408,409,410,411,412,413,417,418,419,421,423,424,427,428,429,433,434,435,436,437,439,440,441,442,443,444,445,446,447,448,449,10002,10006,10007,10008,10009,10010,10011,10012,10014,10020,2102
         };
-    }
 
+        // these are warning messages not sent as brokerage message events
+        private static readonly HashSet<int> FilteredCodes = new HashSet<int>
+        {
+            1100, 1101, 1102, 2103, 2104, 2105, 2106, 2107, 2108, 2119, 2157, 2158
+        };
+    }
 }

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -31,6 +31,7 @@ using QuantConnect.Lean.Engine.HistoricalData;
 using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.Engine.Setup;
 using QuantConnect.Logging;
+using QuantConnect.Orders;
 using QuantConnect.Packets;
 using QuantConnect.Securities;
 using QuantConnect.Tests.Common.Securities;
@@ -62,6 +63,7 @@ namespace QuantConnect.Tests
 
             Composer.Instance.Reset();
             SymbolCache.Clear();
+            MarketOnCloseOrder.SubmissionTimeBuffer = MarketOnCloseOrder.DefaultSubmissionTimeBuffer;
 
             var ordersLogFile = string.Empty;
             var logFile = $"./regression/{algorithm}.{language.ToLower()}.log";
@@ -91,7 +93,7 @@ namespace QuantConnect.Tests
                 var initialDebugEnabled = Log.DebuggingEnabled;
 
                 // Use our current test LogHandler and a FileLogHandler
-                var newLogHandlers = new ILogHandler[] { MaintainLogHandlerAttribute.GetLogHandler(), new FileLogHandler(logFile, false) };
+                var newLogHandlers = new ILogHandler[] { MaintainLogHandlerAttribute.LogHandler, new FileLogHandler(logFile, false) };
 
                 using (Log.LogHandler = new CompositeLogHandler(newLogHandlers))
                 using (var algorithmHandlers = LeanEngineAlgorithmHandlers.FromConfiguration(Composer.Instance))
@@ -157,10 +159,24 @@ namespace QuantConnect.Tests
                 Assert.Fail($"Algorithm state should be {expectedFinalStatus} and is: {algorithmManager?.State}");
             }
 
-            foreach (var stat in expectedStatistics)
+            foreach (var expectedStat in expectedStatistics)
             {
-                Assert.AreEqual(true, statistics.ContainsKey(stat.Key), "Missing key: " + stat.Key);
-                Assert.AreEqual(stat.Value, statistics[stat.Key], "Failed on " + stat.Key);
+                string result;
+                Assert.IsTrue(statistics.TryGetValue(expectedStat.Key, out result), "Missing key: " + expectedStat.Key);
+
+                // normalize -0 & 0, they are the same thing
+                var expected = expectedStat.Value;
+                if (expected == "-0")
+                {
+                    expected = "0";
+                }
+
+                if (result == "-0")
+                {
+                    result = "0";
+                }
+
+                Assert.AreEqual(expected, result, "Failed on " + expectedStat.Key);
             }
 
             if (expectedAlphaStatistics != null)
@@ -213,7 +229,7 @@ namespace QuantConnect.Tests
         /// <summary>
         /// Used to intercept the algorithm instance to aid the <see cref="RegressionHistoryProviderWrapper"/>
         /// </summary>
-        internal class RegressionSetupHandlerWrapper : BacktestingSetupHandler
+        public class RegressionSetupHandlerWrapper : BacktestingSetupHandler
         {
             public static IAlgorithm Algorithm { get; protected set; }
             public override IAlgorithm CreateAlgorithmInstance(AlgorithmNodePacket algorithmNodePacket, string assemblyPath)
@@ -231,7 +247,7 @@ namespace QuantConnect.Tests
         /// <summary>
         /// Used to perform checks against history requests for all regression algorithms
         /// </summary>
-        class RegressionHistoryProviderWrapper : SubscriptionDataReaderHistoryProvider
+        public class RegressionHistoryProviderWrapper : SubscriptionDataReaderHistoryProvider
         {
             public override IEnumerable<Slice> GetHistory(IEnumerable<HistoryRequest> requests, DateTimeZone sliceTimeZone)
             {
@@ -244,7 +260,7 @@ namespace QuantConnect.Tests
             }
         }
 
-        class TestWorkerThread : WorkerThread
+        public class TestWorkerThread : WorkerThread
         {
         }
     }

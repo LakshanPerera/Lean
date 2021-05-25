@@ -14,11 +14,13 @@
 */
 
 using System;
-using System.Collections.Generic;
 using QuantConnect.Data;
-using QuantConnect.Interfaces;
 using QuantConnect.Orders;
+using QuantConnect.Interfaces;
 using QuantConnect.Securities;
+using System.Collections.Generic;
+using QuantConnect.Securities.Option;
+using Futures = QuantConnect.Securities.Futures;
 
 namespace QuantConnect.Algorithm.CSharp
 {
@@ -36,18 +38,13 @@ namespace QuantConnect.Algorithm.CSharp
 
         private readonly DateTime _expectedExpiryWarningTime = new DateTime(2020, 6, 19);
         private readonly DateTime _expectedExpiryDelistingTime = new DateTime(2020, 6, 20);
-        private readonly DateTime _expectedLiquidationTime = new DateTime(2020, 6, 19, 9, 32, 0);
+        private readonly DateTime _expectedLiquidationTime = new DateTime(2020, 6, 19, 16, 0, 0);
 
         public override void Initialize()
         {
             SetStartDate(2020, 1, 5);
             SetEndDate(2020, 12, 1);
             SetCash(100000);
-
-            // To ensure that the expiry liquidations are ran for the Futures and FOPs, we
-            // add AAPL to pump a data point through on liquidation date so that the liquidation goes through
-            // at AAPL market open. See issue for more details: https://github.com/QuantConnect/Lean/issues/4872
-            AddEquity("AAPL", Resolution.Daily);
 
             var es = QuantConnect.Symbol.CreateFuture(
                 Futures.Indices.SP500EMini,
@@ -101,7 +98,32 @@ namespace QuantConnect.Algorithm.CSharp
                 _invested = true;
 
                 MarketOrder(_esFuture, 1);
+
+                var optionContract = Securities[_esFutureOption];
+                var marginModel = optionContract.BuyingPowerModel as FuturesOptionsMarginModel;
+                if (marginModel.InitialIntradayMarginRequirement == 0
+                    || marginModel.InitialOvernightMarginRequirement == 0
+                    || marginModel.MaintenanceIntradayMarginRequirement == 0
+                    || marginModel.MaintenanceOvernightMarginRequirement == 0)
+                {
+                    throw new Exception("Unexpected margin requirements");
+                }
+
+                if (marginModel.GetInitialMarginRequirement(optionContract, 1) == 0)
+                {
+                    throw new Exception("Unexpected Initial Margin requirement");
+                }
+                if (marginModel.GetMaintenanceMargin(optionContract) != 0)
+                {
+                    throw new Exception("Unexpected Maintenance Margin requirement");
+                }
+
                 MarketOrder(_esFutureOption, 1);
+
+                if (marginModel.GetMaintenanceMargin(optionContract) == 0)
+                {
+                    throw new Exception("Unexpected Maintenance Margin requirement");
+                }
             }
         }
 
@@ -114,7 +136,8 @@ namespace QuantConnect.Algorithm.CSharp
 
             // * Future Liquidation
             // * Future Option Exercise
-            // * Underlying Future Liquidation
+
+            // * We expect NO Underlying Future Liquidation because we already hold a Long future position so the FOP Put selling leaves us breakeven
             _liquidated++;
             if (orderEvent.Symbol.SecurityType == SecurityType.FutureOption && _expectedLiquidationTime != Time)
             {
@@ -136,7 +159,7 @@ namespace QuantConnect.Algorithm.CSharp
             {
                 throw new Exception($"Expected 4 delisting events received, found: {_delistingsReceived}");
             }
-            if (_liquidated != 3)
+            if (_liquidated != 2)
             {
                 throw new Exception($"Expected 3 liquidation events, found {_liquidated}");
             }
@@ -157,32 +180,34 @@ namespace QuantConnect.Algorithm.CSharp
         /// </summary>
         public Dictionary<string, string> ExpectedStatistics => new Dictionary<string, string>
         {
-            {"Total Trades", "4"},
-            {"Average Win", "0.13%"},
-            {"Average Loss", "-11.33%"},
-            {"Compounding Annual Return", "-2.634%"},
-            {"Drawdown", "2.400%"},
-            {"Expectancy", "-0.494"},
-            {"Net Profit", "-2.399%"},
-            {"Sharpe Ratio", "-0.933"},
-            {"Probabilistic Sharpe Ratio", "0.003%"},
+            {"Total Trades", "3"},
+            {"Average Win", "10.15%"},
+            {"Average Loss", "-11.34%"},
+            {"Compounding Annual Return", "-2.578%"},
+            {"Drawdown", "2.300%"},
+            {"Expectancy", "-0.053"},
+            {"Net Profit", "-2.345%"},
+            {"Sharpe Ratio", "-0.969"},
+            {"Probabilistic Sharpe Ratio", "0.004%"},
             {"Loss Rate", "50%"},
             {"Win Rate", "50%"},
-            {"Profit-Loss Ratio", "0.01"},
-            {"Alpha", "-0.017"},
-            {"Beta", "-0.001"},
+            {"Profit-Loss Ratio", "0.89"},
+            {"Alpha", "-0.018"},
+            {"Beta", "0.001"},
             {"Annual Standard Deviation", "0.018"},
             {"Annual Variance", "0"},
-            {"Information Ratio", "0.886"},
-            {"Tracking Error", "0.127"},
-            {"Treynor Ratio", "30.534"},
-            {"Total Fees", "$9.25"},
-            {"Fitness Score", "0.007"},
+            {"Information Ratio", "-0.696"},
+            {"Tracking Error", "0.33"},
+            {"Treynor Ratio", "-16.321"},
+            {"Total Fees", "$7.40"},
+            {"Estimated Strategy Capacity", "$45000000.00"},
+            {"Lowest Capacity Asset", "ES XFH59UK0MYO1"},
+            {"Fitness Score", "0.005"},
             {"Kelly Criterion Estimate", "0"},
             {"Kelly Criterion Probability Value", "0"},
-            {"Sortino Ratio", "-0.177"},
-            {"Return Over Maximum Drawdown", "-1.098"},
-            {"Portfolio Turnover", "0.018"},
+            {"Sortino Ratio", "-0.181"},
+            {"Return Over Maximum Drawdown", "-1.1"},
+            {"Portfolio Turnover", "0.013"},
             {"Total Insights Generated", "0"},
             {"Total Insights Closed", "0"},
             {"Total Insights Analysis Completed", "0"},
@@ -196,7 +221,7 @@ namespace QuantConnect.Algorithm.CSharp
             {"Mean Population Magnitude", "0%"},
             {"Rolling Averaged Population Direction", "0%"},
             {"Rolling Averaged Population Magnitude", "0%"},
-            {"OrderListHash", "542517089"}
+            {"OrderListHash", "0128b145984582f5eba7e95881d9b62d"}
         };
     }
 }

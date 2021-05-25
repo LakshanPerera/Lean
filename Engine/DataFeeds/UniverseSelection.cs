@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -114,7 +114,11 @@ namespace QuantConnect.Lean.Engine.DataFeeds
 
             // check if this universe must be filtered with fine fundamental data
             var fineFiltered = universe as FineFundamentalFilteredUniverse;
-            if (fineFiltered != null)
+            if (fineFiltered != null
+                // if the universe has been disposed we don't perform selection. This us handled bellow by 'Universe.PerformSelection'
+                // but in this case we directly call 'SelectSymbols' because we want to perform fine selection even if coarse returns the same
+                // symbols, see 'Universe.PerformSelection', which detects this and returns 'Universe.Unchanged'
+                && !universe.DisposeRequested)
             {
                 // perform initial filtering and limit the result
                 selectSymbolsResult = universe.SelectSymbols(dateTimeUtc, universeData);
@@ -259,35 +263,32 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             }
 
             // determine which data subscriptions need to be removed from this universe
-            foreach (var member in universe.Members.Values)
+            foreach (var member in universe.Securities.Values.OrderBy(member => member.Security.Symbol.SecurityType))
             {
+                var security = member.Security;
                 // if we've selected this subscription again, keep it
-                if (selections.Contains(member.Symbol)) continue;
+                if (selections.Contains(security.Symbol)) continue;
 
                 // don't remove if the universe wants to keep him in
-                if (!universe.CanRemoveMember(dateTimeUtc, member)) continue;
+                if (!universe.CanRemoveMember(dateTimeUtc, security)) continue;
 
                 // remove the member - this marks this member as not being
                 // selected by the universe, but it may remain in the universe
                 // until open orders are closed and the security is liquidated
-                removals.Add(member);
+                removals.Add(security);
 
-                RemoveSecurityFromUniverse(_pendingRemovalsManager.TryRemoveMember(member, universe),
+                RemoveSecurityFromUniverse(_pendingRemovalsManager.TryRemoveMember(security, universe),
                     removals,
                     dateTimeUtc,
                     algorithmEndDateUtc);
             }
 
-            var keys = _pendingSecurityAdditions.Keys;
-            if (keys.Any() && keys.Single() != dateTimeUtc)
-            {
-                // if the frontier moved forward then we've added these securities to the algorithm
-                _pendingSecurityAdditions.Clear();
-            }
-
             Dictionary<Symbol, Security> pendingAdditions;
             if (!_pendingSecurityAdditions.TryGetValue(dateTimeUtc, out pendingAdditions))
             {
+                // if the frontier moved forward then we've added these securities to the algorithm
+                _pendingSecurityAdditions.Clear();
+
                 // keep track of created securities so we don't create the same security twice, leads to bad things :)
                 pendingAdditions = new Dictionary<Symbol, Security>();
                 _pendingSecurityAdditions[dateTimeUtc] = pendingAdditions;
@@ -302,21 +303,13 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                     continue;
                 }
 
-                // create the new security, the algorithm thread will add this at the appropriate time
-                Security security;
-                if (!pendingAdditions.TryGetValue(symbol, out security) && !_algorithm.Securities.TryGetValue(symbol, out security))
+                Security underlying = null;
+                if (symbol.HasUnderlying)
                 {
-                    // For now this is required for retro compatibility with usages of security.Subscriptions
-                    var configs = _algorithm.SubscriptionManager.SubscriptionDataConfigService.Add(symbol,
-                        universe.UniverseSettings.Resolution,
-                        universe.UniverseSettings.FillForward,
-                        universe.UniverseSettings.ExtendedMarketHours,
-                        dataNormalizationMode: universe.UniverseSettings.DataNormalizationMode);
-
-                    security = _securityService.CreateSecurity(symbol, configs, universe.UniverseSettings.Leverage, (symbol.ID.SecurityType == SecurityType.Option || symbol.ID.SecurityType == SecurityType.FutureOption));
-
-                    pendingAdditions.Add(symbol, security);
+                    underlying = GetOrCreateSecurity(pendingAdditions, symbol.Underlying, universe.UniverseSettings);
                 }
+                // create the new security, the algorithm thread will add this at the appropriate time
+                var security = GetOrCreateSecurity(pendingAdditions, symbol, universe.UniverseSettings, underlying);
 
                 var addedSubscription = false;
                 var dataFeedAdded = false;
@@ -460,6 +453,10 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             DateTime dateTimeUtc,
             DateTime algorithmEndDateUtc)
         {
+            if (removedMembers == null)
+            {
+                return;
+            }
             foreach (var removedMember in removedMembers)
             {
                 var universe = removedMember.Universe;
@@ -488,10 +485,28 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                         }
                     }
                 }
-
-                // remove symbol mappings for symbols removed from universes // TODO : THIS IS BAD!
-                SymbolCache.TryRemove(member.Symbol);
             }
+        }
+
+        private Security GetOrCreateSecurity(Dictionary<Symbol, Security> pendingAdditions, Symbol symbol, UniverseSettings universeSettings, Security underlying = null)
+        {
+            // create the new security, the algorithm thread will add this at the appropriate time
+            Security security;
+            if (!pendingAdditions.TryGetValue(symbol, out security) && !_algorithm.Securities.TryGetValue(symbol, out security))
+            {
+                // For now this is required for retro compatibility with usages of security.Subscriptions
+                var configs = _algorithm.SubscriptionManager.SubscriptionDataConfigService.Add(symbol,
+                    universeSettings.Resolution,
+                    universeSettings.FillForward,
+                    universeSettings.ExtendedMarketHours,
+                    dataNormalizationMode: universeSettings.DataNormalizationMode);
+
+                security = _securityService.CreateSecurity(symbol, configs, universeSettings.Leverage, symbol.ID.SecurityType.IsOption(), underlying);
+
+                pendingAdditions.Add(symbol, security);
+            }
+
+            return security;
         }
     }
 }
